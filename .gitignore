@@ -10,3 +10,6 @@ build/
 complex_test/
 test/
 *_context.md
+
+!test/test.md
+!test/*_context.md
