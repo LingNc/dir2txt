@@ -6,3 +6,7 @@ todos/
 build/
 *.exe
 !LICENSE
+
+complex_test/
+test/
+*_context.md

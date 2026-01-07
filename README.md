@@ -36,8 +36,8 @@ go build dir2txt.go
 
 #### v1.7.1
 1. 修复：-f -F 参数情况下如果有范围过滤选项会覆盖掉后面的 ! 排除项。例如 dir2txt -d xxxx -f '*' '!xxxx.file' 会导致 xxxx.file 一起被排除。
-2. 新增：--gitignore 配置项，会按照git的排除方法对改文件夹中包含 .gitignore 进行排除，包括子文件夹的 .gitignore 就像git一样。并且使用该选项的时候会忽略原本自带的 build 等忽略项只会根据 .gitignore 中进行过滤（但是会过滤 .git文件夹）。该选项和 -Fc/-fc 互斥。
-3. 新增：--all 配置项，忽略默认的的排除项规则，例如 build/、__pycache__ 等，默认将所有文件加入。
+2. 新增：--gitignore 配置项，会按照git的排除方法对该文件夹中包含 .gitignore 进行排除，包括子文件夹的 .gitignore 就像git一样。并且使用该选项的时候会忽略原本自带的 build 等忽略项只会根据 .gitignore 中进行过滤（但是会过滤 .git文件夹）。该选项和 -Fc/-fc 互斥。
+3. 新增：--all 配置项，忽略前面所有的规则（最开始用可以清除默认的硬过滤），例如 build/、__pycache__ 等，默认将所有文件加入。
 
 #### v1.7.2
 1. 修复：-f -F 参数情况下排除项失效情况同v1.7.1，解决上次未完全修复。
@@ -49,3 +49,15 @@ go build dir2txt.go
     3. dir2txt --gitignore --soft 'secret.txt' .
         结果：secret.txt 出现在目录树中（--soft 覆盖了 gitignore），但内容不输出。
 3. 调整：--gitignore 默认为硬过滤，排除掉的内容不会出现在目录中。
+
+#### v1.7.3
+1. 移除：--soft/--hard 控制逻辑，采用更自然的先后顺序优先级方式，默认的排除规则是第一个 -F 的规则，可以通过后面的任何规则去覆盖或者细化调整，-f 和 -F 控制也保持了后面会覆盖前面的方式。
+2. 调整：--gitignore 要改变其过滤性只需要在前面的加上 -f 即可（默认硬过滤），并且也会应用默认过滤规则，如果需要全部展开请在最开始使用 --all。
+3. 修复：在同一个过滤器中 -f 'build' '!build/*.exe' 类似这样的规则后面不能正确覆盖前面的规则。
+4. 提示：对于任何一个选项在哪里用就哪里具有对应的优先级，比如 --all 应该最开始用，如果最后用会清除前面所有的规则。
+例如：
+1. dir2txt 无参数 默认相当于 `dir2txt -F '.git' '.idea' '.vscode' 'node_modules' '__pycache__' 'dist' 'build' 'vendor' 'bin' 'obj' 'target' '.next' 'coverage' -f '*.png' '*.jpg' '*.jpeg' '*.gif' '*.ico' '*.svg' '*.mp4' '*.mp3' '*.wav' '*.webp' '*.zip' '*.tar' '*.gz' '*.7z' '*.rar' '*.exe' '*.dll' '*.so' '*.dylib' '*.class' '*.pyc' '*.o' '*.ttf' '*.woff' '*.woff2' '*.eot' '*.lock' '*.pdf' '*.ds_store'`
+2. dir2txt -f node_modules 可以将 node_modules 目录保留在目录树中，但是不输出内容。
+3. dir2txt -f --gitignore 可以根据 .gitignore 规则进行软过滤。
+4. dir2txt --all --gitignore 可以先清除所有规则之后再应用规则。
+5. dir2txt -F src/ -f src/main.go 可以将 src 目录完全过滤掉，但是保留 main.go 文件。
