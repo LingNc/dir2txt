@@ -33,3 +33,8 @@ go build dir2txt.go
 
 ### v1.7
 1. 新增 --install/--uninstall 参数，控制是否安装到系统中并添加环境变量。
+
+#### v1.7.1
+1. 修复：-f -F 参数情况下如果有范围过滤选项会覆盖掉后面的 ! 排除项。例如 dir2txt -d xxxx -f '*' '!xxxx.file' 会导致 xxxx.file 一起被排除。
+2. 新增：--gitignore 配置项，会按照git的排除方法对改文件夹中包含 .gitignore 进行排除，包括子文件夹的 .gitignore 就像git一样。并且使用该选项的时候会忽略原本自带的 build 等忽略项只会根据 .gitignore 中进行过滤（但是会过滤 .git文件夹）。该选项和 -Fc/-fc 互斥。
+3. 新增：--all 配置项，忽略默认的的排除项规则，例如 build/、__pycache__ 等，默认将所有文件加入。

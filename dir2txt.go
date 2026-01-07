@@ -15,12 +15,13 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	gogitignore "github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 )
 
 const (
-	version         = "v1.7.0"
+	version         = "v1.7.1"
 	maxDisplayFiles = 24
 	keepHeadFiles   = 8
 	keepTailFiles   = 8
@@ -35,21 +36,36 @@ type Config struct {
 	MaxFileSize  int64           // 忽略过大的文件
 	TextExts     map[string]bool // 强制视为文本的文件后缀
 	NoFold       bool            // 是否关闭目录树文件折叠
+	ShowAll      bool            // 是否展示所有文件，忽略内置过滤
+	UseGitignore bool            // 是否启用 .gitignore 规则
 }
 
 // walkFollowSymlinks 遍历目录，跟随符号链接的目录，保持逻辑路径用于过滤
 func walkFollowSymlinks(root string, fn func(logicalRel string, fullPath string, d os.DirEntry) error) error {
 	type node struct {
-		fsPath string // 实际文件系统路径（可能为解析后的目标路径）
-		rel    string // 相对 root 的逻辑路径（使用符号链接名字串接）
+		fsPath   string // 实际文件系统路径（可能为解析后的目标路径）
+		rel      string // 相对 root 的逻辑路径（使用符号链接名字串接）
+		patterns []gogitignore.Pattern
 	}
 
-	stack := []node{{fsPath: root, rel: ""}}
+	stack := []node{{fsPath: root, rel: "", patterns: nil}}
 	seen := map[string]bool{}
 
 	for len(stack) > 0 {
 		n := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
+
+		var matcher gogitignore.Matcher
+		var patterns []gogitignore.Pattern
+		if config.UseGitignore {
+			var err error
+			matcher, patterns, err = applyGitignoreFile(n.fsPath, n.rel, n.patterns)
+			if err != nil {
+				return err
+			}
+		} else {
+			patterns = n.patterns
+		}
 
 		entries, err := os.ReadDir(n.fsPath)
 		if err != nil {
@@ -77,7 +93,13 @@ func walkFollowSymlinks(root string, fn func(logicalRel string, fullPath string,
 				}
 			}
 
-			// 先把当前条目交给回调
+			if config.UseGitignore {
+				relSlash := filepath.ToSlash(logicalRel)
+				if matcher != nil && matcher.Match(splitPath(relSlash), childIsDir) {
+					continue
+				}
+			}
+
 			if err := fn(logicalRel, childFSPath, entry); err != nil {
 				if errors.Is(err, filepath.SkipDir) {
 					continue
@@ -93,12 +115,54 @@ func walkFollowSymlinks(root string, fn func(logicalRel string, fullPath string,
 					}
 					seen[real] = true
 				}
-				stack = append(stack, node{fsPath: childFSPath, rel: logicalRel})
+				stack = append(stack, node{fsPath: childFSPath, rel: logicalRel, patterns: patterns})
 			}
 		}
 	}
 
 	return nil
+}
+
+func applyGitignoreFile(dirPath string, logicalRel string, parentPatterns []gogitignore.Pattern) (gogitignore.Matcher, []gogitignore.Pattern, error) {
+	if !config.UseGitignore {
+		return nil, parentPatterns, nil
+	}
+
+	patterns := append([]gogitignore.Pattern{}, parentPatterns...)
+	giPath := filepath.Join(dirPath, ".gitignore")
+	f, err := os.Open(giPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if len(patterns) == 0 {
+				return nil, patterns, nil
+			}
+			return gogitignore.NewMatcher(patterns), patterns, nil
+		}
+		return nil, nil, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		base := filepath.ToSlash(logicalRel)
+		patterns = append(patterns, gogitignore.ParsePattern(line, splitPath(base)))
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	return gogitignore.NewMatcher(patterns), patterns, nil
+}
+
+func splitPath(rel string) []string {
+	if rel == "" {
+		return []string{}
+	}
+	return strings.Split(rel, "/")
 }
 
 // multiValue 允许通过空格或多次传参传入多个值，例如：
@@ -153,6 +217,8 @@ func parseCommandLine() (rawStringList, multiValue, multiValue, string, bool, bo
 	var help bool
 	var install bool
 	var uninstall bool
+	var useGitignore bool
+	var usedConfigFile bool
 	args := os.Args[1:]
 	var leftover []string
 	for i := 0; i < len(args); i++ {
@@ -165,6 +231,11 @@ func parseCommandLine() (rawStringList, multiValue, multiValue, string, bool, bo
 			install = true
 		case arg == "--uninstall":
 			uninstall = true
+		case arg == "--all":
+			config.ShowAll = true
+		case arg == "--gitignore":
+			useGitignore = true
+			config.UseGitignore = true
 		case arg == "--no-fold":
 			config.NoFold = true
 		case arg == "--config" || arg == "-c" || arg == "-fc":
@@ -176,6 +247,7 @@ func parseCommandLine() (rawStringList, multiValue, multiValue, string, bool, bo
 			if err != nil {
 				return dirs, softFilters, hardFilters, out, help, install, uninstall, err
 			}
+			usedConfigFile = true
 			for _, p := range patterns {
 				softFilters = append(softFilters, p)
 			}
@@ -184,6 +256,7 @@ func parseCommandLine() (rawStringList, multiValue, multiValue, string, bool, bo
 			if err != nil {
 				return dirs, softFilters, hardFilters, out, help, install, uninstall, err
 			}
+			usedConfigFile = true
 			for _, p := range patterns {
 				softFilters = append(softFilters, p)
 			}
@@ -192,6 +265,7 @@ func parseCommandLine() (rawStringList, multiValue, multiValue, string, bool, bo
 			if err != nil {
 				return dirs, softFilters, hardFilters, out, help, install, uninstall, err
 			}
+			usedConfigFile = true
 			for _, p := range patterns {
 				softFilters = append(softFilters, p)
 			}
@@ -204,6 +278,7 @@ func parseCommandLine() (rawStringList, multiValue, multiValue, string, bool, bo
 			if err != nil {
 				return dirs, softFilters, hardFilters, out, help, install, uninstall, err
 			}
+			usedConfigFile = true
 			for _, p := range patterns {
 				hardFilters = append(hardFilters, p)
 			}
@@ -212,6 +287,7 @@ func parseCommandLine() (rawStringList, multiValue, multiValue, string, bool, bo
 			if err != nil {
 				return dirs, softFilters, hardFilters, out, help, install, uninstall, err
 			}
+			usedConfigFile = true
 			for _, p := range patterns {
 				hardFilters = append(hardFilters, p)
 			}
@@ -264,6 +340,10 @@ func parseCommandLine() (rawStringList, multiValue, multiValue, string, bool, bo
 		default:
 			leftover = append(leftover, arg)
 		}
+	}
+
+	if useGitignore && usedConfigFile {
+		return dirs, softFilters, hardFilters, out, help, install, uninstall, fmt.Errorf("--gitignore 不能与 -c/-fc/-Fc 一起使用")
 	}
 
 	if install && uninstall {
@@ -469,6 +549,8 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  --config/-c   指定配置文件路径 (默认作为软过滤); 行首 # 视为注释\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  -fc           指定配置文件路径 (强制作为软过滤); 行首 # 视为注释\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  -Fc           指定配置文件路径 (强制作为硬过滤); 行首 # 视为注释\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --all         忽略内置的默认过滤规则，显示所有文件 (仍保留自保护文件的排除)。\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --gitignore   使用 .gitignore 规则递归过滤；启用后禁用内置忽略列表 (保留 .git)。与 -c/-fc/-Fc 互斥。\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  Pattern 语法: ? 单字符 (test?.log); * 任意串 (*.go); [] 字符范围 (file[0-9].txt); 前缀 ! 取反 (!important.txt)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --out/-o      指定输出文件路径或输出目录\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --no-fold     在目录树中不折叠长文件列表，始终显示全部文件 (默认超过 %d 个文件折叠)\n", maxDisplayFiles)
@@ -487,6 +569,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
 		flag.Usage()
 		os.Exit(1)
+	}
+
+	if config.UseGitignore {
+		config.IgnoredDirs = map[string]bool{".git": true}
+		config.IgnoredExts = map[string]bool{}
+	} else if config.ShowAll {
+		config.IgnoredDirs = map[string]bool{}
+		config.IgnoredExts = map[string]bool{}
 	}
 
 	if install {
@@ -560,7 +650,7 @@ func processDirs(dirs []string, softFilters []string, hardFilters []string, writ
 			continue
 		}
 		writer.WriteString(filepath.Base(absDir) + "/\n")
-		if err := writeTree(absDir, absDir, absDir, absDir, "", writer, hardFilters, map[string]bool{}); err != nil {
+		if err := writeTree(absDir, absDir, absDir, absDir, "", writer, hardFilters, map[string]bool{}, nil); err != nil {
 			writer.WriteString(fmt.Sprintf("Error generating tree for %s: %v\n", dir, err))
 		}
 		writer.WriteString("\n")
@@ -852,6 +942,9 @@ func checkFilter(fullPath string, filters []string) (bool, string) {
 
 	full := filepath.ToSlash(fullPath)
 
+	matched := false
+	lastRule := ""
+
 	for _, rule := range filters {
 		if rule == "" {
 			continue
@@ -861,63 +954,63 @@ func checkFilter(fullPath string, filters []string) (bool, string) {
 		cleanRule := strings.TrimPrefix(rule, "!")
 		cleanRule = filepath.ToSlash(cleanRule)
 
-		matched := false
+		currentMatch := false
 
 		if strings.HasSuffix(cleanRule, "/*") {
 			parent := strings.TrimSuffix(cleanRule, "/*")
 			if parent != "" && strings.HasPrefix(full, parent+"/") && full != parent {
-				matched = true
+				currentMatch = true
 			}
 		} else {
 			cleanRule = strings.TrimSuffix(cleanRule, "/")
 
 			if cleanRule != "" && (full == cleanRule || strings.HasPrefix(full, cleanRule+"/")) {
-				matched = true
+				currentMatch = true
 			} else {
 				if m, _ := path.Match(cleanRule, full); m {
-					matched = true
+					currentMatch = true
 				}
 				if m, _ := path.Match(cleanRule, filepath.Base(full)); m {
-					matched = true
+					currentMatch = true
 				}
 			}
 		}
 
-		if matched {
-			if isNeg {
-				return false, rule
-			}
-			return true, rule
+		if currentMatch {
+			matched = !isNeg
+			lastRule = rule
 		}
 	}
 
-	return false, ""
+	return matched, lastRule
 }
 
 // isJunk 检查是否为"垃圾"文件/目录 (不应该出现在任何地方)
 // 例如: .git, node_modules, .DS_Store, code2md.exe
 func isJunk(name string) bool {
-	// 关键修复：当前目录 "." 不是垃圾文件
-	if name == "." {
+	if name == "." || name == ".." {
 		return false
 	}
 
-	// 特例：保留 .env 和 .gitignore，虽然它们以点开头，但通常很重要
-	if name == ".env" || name == ".gitignore" {
-		return false
-	}
-
-	// 1. 检查特定文件名忽略列表 (如 code2md.exe) - 这里是完全隐藏
 	if config.IgnoredFiles[name] {
 		return true
 	}
 
-	// 2. 忽略隐藏文件/目录 (以 . 开头)
+	if config.ShowAll || config.UseGitignore {
+		if config.IgnoredDirs[name] {
+			return true
+		}
+		return false
+	}
+
+	if name == ".env" || name == ".gitignore" {
+		return false
+	}
+
 	if strings.HasPrefix(name, ".") {
 		return true
 	}
 
-	// 3. 忽略配置中指定的目录 (如 node_modules)
 	if config.IgnoredDirs[name] {
 		return true
 	}
@@ -928,6 +1021,9 @@ func isJunk(name string) bool {
 // isAsset 检查是否为"资源"文件 (应该出现在目录树中，但不读取内容)
 // 例如: 图片, 普通可执行文件
 func isAsset(name string) bool {
+	if config.ShowAll || config.UseGitignore {
+		return false
+	}
 	// 检查文件扩展名 (如 .png, .exe)
 	ext := strings.ToLower(filepath.Ext(name))
 	if config.IgnoredExts[ext] {
@@ -973,7 +1069,19 @@ func convertToUTF8(content []byte) ([]byte, string, error) {
 }
 
 // writeTree 生成简单的 ASCII 目录树，支持文件折叠，跟随符号链接目录但使用逻辑路径做过滤
-func writeTree(rootFS string, rootLogical string, currentFS string, currentLogical string, prefix string, w *bufio.Writer, hardFilters []string, seen map[string]bool) error {
+func writeTree(rootFS string, rootLogical string, currentFS string, currentLogical string, prefix string, w *bufio.Writer, hardFilters []string, seen map[string]bool, patterns []gogitignore.Pattern) error {
+	var matcher gogitignore.Matcher
+	var currentPatterns []gogitignore.Pattern
+	if config.UseGitignore {
+		var err error
+		matcher, currentPatterns, err = applyGitignoreFile(currentFS, currentLogical, patterns)
+		if err != nil {
+			return err
+		}
+	} else {
+		currentPatterns = patterns
+	}
+
 	entries, err := os.ReadDir(currentFS)
 	if err != nil {
 		return err
@@ -1003,6 +1111,12 @@ func writeTree(rootFS string, rootLogical string, currentFS string, currentLogic
 			matched, _ := checkFilter(relSlash, hardFilters)
 			if matched {
 				// 目录层保留，但被匹配的子节点会被隐藏
+				continue
+			}
+		}
+
+		if config.UseGitignore && matcher != nil {
+			if matcher.Match(splitPath(relSlash), entry.IsDir()) {
 				continue
 			}
 		}
@@ -1079,7 +1193,7 @@ func writeTree(rootFS string, rootLogical string, currentFS string, currentLogic
 			if isLast {
 				newPrefix = prefix + "    "
 			}
-			writeTree(rootFS, rootLogical, childPathFS, childPathLogical, newPrefix, w, hardFilters, seen)
+			writeTree(rootFS, rootLogical, childPathFS, childPathLogical, newPrefix, w, hardFilters, seen, currentPatterns)
 		}
 	}
 	return nil
