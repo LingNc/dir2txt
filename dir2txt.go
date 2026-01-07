@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	version         = "v1.7.1"
+	version         = "v1.7.2"
 	maxDisplayFiles = 24
 	keepHeadFiles   = 8
 	keepTailFiles   = 8
@@ -29,19 +29,21 @@ const (
 
 // Config 配置需要忽略的目录和文件后缀
 type Config struct {
-	OutputFile   string
-	IgnoredDirs  map[string]bool
-	IgnoredExts  map[string]bool
-	IgnoredFiles map[string]bool // 指定要完全隐藏的文件 (既不在树中显示，也不读取内容)
-	MaxFileSize  int64           // 忽略过大的文件
-	TextExts     map[string]bool // 强制视为文本的文件后缀
-	NoFold       bool            // 是否关闭目录树文件折叠
-	ShowAll      bool            // 是否展示所有文件，忽略内置过滤
-	UseGitignore bool            // 是否启用 .gitignore 规则
+	OutputFile          string
+	IgnoredDirs         map[string]bool
+	IgnoredExts         map[string]bool
+	IgnoredFiles        map[string]bool // 指定要完全隐藏的文件 (既不在树中显示，也不读取内容)
+	MaxFileSize         int64           // 忽略过大的文件
+	TextExts            map[string]bool // 强制视为文本的文件后缀
+	NoFold              bool            // 是否关闭目录树文件折叠
+	ShowAll             bool            // 是否展示所有文件，忽略内置过滤
+	UseGitignore        bool            // 是否启用 .gitignore 规则
+	PrioritySoftFilters []string        // --soft 高优先级软过滤
+	PriorityHardFilters []string        // --hard 高优先级硬过滤
 }
 
 // walkFollowSymlinks 遍历目录，跟随符号链接的目录，保持逻辑路径用于过滤
-func walkFollowSymlinks(root string, fn func(logicalRel string, fullPath string, d os.DirEntry) error) error {
+func walkFollowSymlinks(root string, fn func(logicalRel string, fullPath string, d os.DirEntry, matcher gogitignore.Matcher) error) error {
 	type node struct {
 		fsPath   string // 实际文件系统路径（可能为解析后的目标路径）
 		rel      string // 相对 root 的逻辑路径（使用符号链接名字串接）
@@ -93,14 +95,7 @@ func walkFollowSymlinks(root string, fn func(logicalRel string, fullPath string,
 				}
 			}
 
-			if config.UseGitignore {
-				relSlash := filepath.ToSlash(logicalRel)
-				if matcher != nil && matcher.Match(splitPath(relSlash), childIsDir) {
-					continue
-				}
-			}
-
-			if err := fn(logicalRel, childFSPath, entry); err != nil {
+			if err := fn(logicalRel, childFSPath, entry, matcher); err != nil {
 				if errors.Is(err, filepath.SkipDir) {
 					continue
 				}
@@ -211,8 +206,10 @@ func (e *SimpleDirEntry) Info() (os.FileInfo, error) { return nil, nil }
 
 func parseCommandLine() (rawStringList, multiValue, multiValue, string, bool, bool, bool, error) {
 	var dirs rawStringList
-	var softFilters multiValue // -f / --filter / -filter : 只过滤内容，不排除树
-	var hardFilters multiValue // -F / --Filter : 完全过滤，树和内容都不出现
+	var softFilters multiValue  // -f / --filter / -filter : 只过滤内容，不排除树
+	var hardFilters multiValue  // -F / --Filter : 完全过滤，树和内容都不出现
+	var prioritySoft multiValue // --soft : 高优先级软过滤
+	var priorityHard multiValue // --hard : 高优先级硬过滤
 	var out string
 	var help bool
 	var install bool
@@ -303,6 +300,30 @@ func parseCommandLine() (rawStringList, multiValue, multiValue, string, bool, bo
 			}
 		case strings.HasPrefix(arg, "--dir="):
 			dirs.Set(strings.TrimPrefix(arg, "--dir="))
+		case arg == "--soft":
+			consumed := 0
+			for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				prioritySoft.Set(args[i])
+				consumed++
+			}
+			if consumed == 0 {
+				return dirs, softFilters, hardFilters, out, help, install, uninstall, fmt.Errorf("--soft 需要一个表达式")
+			}
+		case strings.HasPrefix(arg, "--soft="):
+			prioritySoft.Set(strings.TrimPrefix(arg, "--soft="))
+		case arg == "--hard":
+			consumed := 0
+			for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				priorityHard.Set(args[i])
+				consumed++
+			}
+			if consumed == 0 {
+				return dirs, softFilters, hardFilters, out, help, install, uninstall, fmt.Errorf("--hard 需要一个表达式")
+			}
+		case strings.HasPrefix(arg, "--hard="):
+			priorityHard.Set(strings.TrimPrefix(arg, "--hard="))
 		case arg == "--filter" || arg == "-filter" || arg == "-f":
 			consumed := 0
 			for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
@@ -357,6 +378,10 @@ func parseCommandLine() (rawStringList, multiValue, multiValue, string, bool, bo
 		}
 		dirs.Set(arg)
 	}
+
+	config.PrioritySoftFilters = append(config.PrioritySoftFilters[:0], prioritySoft...)
+	config.PriorityHardFilters = append(config.PriorityHardFilters[:0], priorityHard...)
+
 	return dirs, softFilters, hardFilters, out, help, install, uninstall, nil
 }
 
@@ -546,6 +571,8 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  --dir/-d      指定要扫描的目录，可重复；也可用位置参数追加目录\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --filter/-f   软过滤：仅跳过文件内容输出，目录和树仍显示；支持 * ? [] 与 ! 反向\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --Filter/-F   硬过滤：目录树和文件内容都不显示；支持 * ? [] 与 ! 反向\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --soft        高优先级软过滤，追加到过滤列表末尾以覆盖先前规则\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --hard        高优先级硬过滤，追加到过滤列表末尾以覆盖先前规则\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --config/-c   指定配置文件路径 (默认作为软过滤); 行首 # 视为注释\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  -fc           指定配置文件路径 (强制作为软过滤); 行首 # 视为注释\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  -Fc           指定配置文件路径 (强制作为硬过滤); 行首 # 视为注释\n")
@@ -598,6 +625,8 @@ func main() {
 	dirs := []string(parsedDirs)
 	softFilters := normalizeFilters([]string(parsedSoftFilters))
 	hardFilters := normalizeFilters([]string(parsedHardFilters))
+	config.PrioritySoftFilters = normalizeFilters(config.PrioritySoftFilters)
+	config.PriorityHardFilters = normalizeFilters(config.PriorityHardFilters)
 	if len(dirs) == 0 {
 		dirs = append(dirs, ".")
 	}
@@ -634,6 +663,47 @@ func main() {
 	fmt.Println("完成！")
 }
 
+type FilterAction int
+
+const (
+	ActionKeep FilterAction = iota
+	ActionSoftSkip
+	ActionHardSkip
+)
+
+func evaluatePath(relPath string, isDir bool, standardSoft []string, standardHard []string, gitMatcher gogitignore.Matcher) FilterAction {
+	relSlash := filepath.ToSlash(relPath)
+	base := filepath.Base(relSlash)
+
+	if matched, _ := checkFilter(relSlash, config.PriorityHardFilters); matched {
+		return ActionHardSkip
+	}
+
+	if matched, _ := checkFilter(relSlash, config.PrioritySoftFilters); matched {
+		return ActionSoftSkip
+	}
+
+	if base != "" && isJunk(base) {
+		return ActionHardSkip
+	}
+
+	if matched, _ := checkFilter(relSlash, standardHard); matched {
+		return ActionHardSkip
+	}
+
+	if config.UseGitignore && gitMatcher != nil {
+		if gitMatcher.Match(splitPath(relSlash), isDir) {
+			return ActionHardSkip
+		}
+	}
+
+	if matched, _ := checkFilter(relSlash, standardSoft); matched {
+		return ActionSoftSkip
+	}
+
+	return ActionKeep
+}
+
 func processDirs(dirs []string, softFilters []string, hardFilters []string, writer *bufio.Writer, finalOutPath string) error {
 	absOut, err := filepath.Abs(finalOutPath)
 	if err != nil {
@@ -650,7 +720,7 @@ func processDirs(dirs []string, softFilters []string, hardFilters []string, writ
 			continue
 		}
 		writer.WriteString(filepath.Base(absDir) + "/\n")
-		if err := writeTree(absDir, absDir, absDir, absDir, "", writer, hardFilters, map[string]bool{}, nil); err != nil {
+		if err := writeTree(absDir, absDir, absDir, absDir, "", writer, softFilters, hardFilters, map[string]bool{}, nil); err != nil {
 			writer.WriteString(fmt.Sprintf("Error generating tree for %s: %v\n", dir, err))
 		}
 		writer.WriteString("\n")
@@ -667,7 +737,7 @@ func processDirs(dirs []string, softFilters []string, hardFilters []string, writ
 			firstErr = err
 			continue
 		}
-		err = walkFollowSymlinks(absDir, func(logicalRel string, fullPath string, d os.DirEntry) error {
+		err = walkFollowSymlinks(absDir, func(logicalRel string, fullPath string, d os.DirEntry, matcher gogitignore.Matcher) error {
 			// 排除输出文件自身
 			absPath := fullPath
 			if absPath == absOut {
@@ -690,39 +760,35 @@ func processDirs(dirs []string, softFilters []string, hardFilters []string, writ
 				relSlash = ""
 			}
 
-			if relSlash != "" {
-				matchedHard, _ := checkFilter(relSlash, hardFilters)
-				if matchedHard {
-					if d.IsDir() {
-						return filepath.SkipDir
-					}
+			action := evaluatePath(relSlash, d.IsDir(), softFilters, hardFilters, matcher)
+
+			switch action {
+			case ActionHardSkip:
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			case ActionSoftSkip:
+				if d.IsDir() {
 					return nil
 				}
-			}
-
-			matchedSoft, rule := checkFilter(relSlash, softFilters)
-			if matchedSoft {
 				display := relSlash
 				if display == "" {
 					display = filepath.ToSlash(fullPath)
 				}
+				fmt.Printf("[SKIP] 忽略内容 (Soft Filter): %s\n", display)
+				return nil
+			case ActionKeep:
 				if d.IsDir() {
-					fmt.Printf("[SKIP] 忽略目录 (Soft Filter: \"%s\"): %s\n", rule, display)
-					return filepath.SkipDir
+					return nil
 				}
-				fmt.Printf("[SKIP] 忽略内容 (Soft Filter: \"%s\"): %s\n", rule, display)
-				return nil
+				if isAsset(name) {
+					return nil
+				}
+				return processFile(fullPath, writer)
 			}
 
-			if d.IsDir() {
-				return nil
-			}
-
-			if isAsset(name) {
-				return nil
-			}
-
-			return processFile(fullPath, writer)
+			return nil
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "处理目录 %s 时出错: %v\n", dir, err)
@@ -1069,7 +1135,7 @@ func convertToUTF8(content []byte) ([]byte, string, error) {
 }
 
 // writeTree 生成简单的 ASCII 目录树，支持文件折叠，跟随符号链接目录但使用逻辑路径做过滤
-func writeTree(rootFS string, rootLogical string, currentFS string, currentLogical string, prefix string, w *bufio.Writer, hardFilters []string, seen map[string]bool, patterns []gogitignore.Pattern) error {
+func writeTree(rootFS string, rootLogical string, currentFS string, currentLogical string, prefix string, w *bufio.Writer, softFilters []string, hardFilters []string, seen map[string]bool, patterns []gogitignore.Pattern) error {
 	var matcher gogitignore.Matcher
 	var currentPatterns []gogitignore.Pattern
 	if config.UseGitignore {
@@ -1100,25 +1166,9 @@ func writeTree(rootFS string, rootLogical string, currentFS string, currentLogic
 			continue
 		}
 
-		// 关键点：只排除"垃圾"文件 (isJunk)，不排除"资源"文件 (isAsset)
-		// 这样图片和exe文件会出现在树中
-		if isJunk(name) {
+		action := evaluatePath(relSlash, entry.IsDir(), softFilters, hardFilters, matcher)
+		if action == ActionHardSkip {
 			continue
-		}
-
-		// 过滤表达式处理（对目录树也生效，仅使用 hardFilters）
-		if relSlash != "" {
-			matched, _ := checkFilter(relSlash, hardFilters)
-			if matched {
-				// 目录层保留，但被匹配的子节点会被隐藏
-				continue
-			}
-		}
-
-		if config.UseGitignore && matcher != nil {
-			if matcher.Match(splitPath(relSlash), entry.IsDir()) {
-				continue
-			}
 		}
 
 		visibleEntries = append(visibleEntries, entry)
@@ -1193,7 +1243,7 @@ func writeTree(rootFS string, rootLogical string, currentFS string, currentLogic
 			if isLast {
 				newPrefix = prefix + "    "
 			}
-			writeTree(rootFS, rootLogical, childPathFS, childPathLogical, newPrefix, w, hardFilters, seen, currentPatterns)
+			writeTree(rootFS, rootLogical, childPathFS, childPathLogical, newPrefix, w, softFilters, hardFilters, seen, currentPatterns)
 		}
 	}
 	return nil

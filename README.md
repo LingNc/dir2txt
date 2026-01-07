@@ -38,3 +38,14 @@ go build dir2txt.go
 1. 修复：-f -F 参数情况下如果有范围过滤选项会覆盖掉后面的 ! 排除项。例如 dir2txt -d xxxx -f '*' '!xxxx.file' 会导致 xxxx.file 一起被排除。
 2. 新增：--gitignore 配置项，会按照git的排除方法对改文件夹中包含 .gitignore 进行排除，包括子文件夹的 .gitignore 就像git一样。并且使用该选项的时候会忽略原本自带的 build 等忽略项只会根据 .gitignore 中进行过滤（但是会过滤 .git文件夹）。该选项和 -Fc/-fc 互斥。
 3. 新增：--all 配置项，忽略默认的的排除项规则，例如 build/、__pycache__ 等，默认将所有文件加入。
+
+#### v1.7.2
+1. 修复：-f -F 参数情况下排除项失效情况同v1.7.1，解决上次未完全修复。
+2. 新增：--soft/--hard 更高的优先级规定排除的内容是否显示在目录中，软过滤/硬过滤，并且控制参数实际规则。
+    1. dir2txt -F 'node_modules' --soft 'node_modules' .
+        结果：node_modules 出现在目录树中（--soft 覆盖了 -F）。
+    2. dir2txt -f 'src' --hard 'src' .
+        结果：src 完全消失（--hard 覆盖了 -f）。
+    3. dir2txt --gitignore --soft 'secret.txt' .
+        结果：secret.txt 出现在目录树中（--soft 覆盖了 gitignore），但内容不输出。
+3. 调整：--gitignore 默认为硬过滤，排除掉的内容不会出现在目录中。
