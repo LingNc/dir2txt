@@ -70,8 +70,9 @@ go build dir2txt.go
 1. 新增 --unwrap 输入由 dir2txt 打包的单文件内容还原回文件夹结构。
 
 #### v1.8.1
-1. 新增 --version/-v 只显示版本号。
+1. 新增 --version/-v 只显示版本号和署名。
 2. 新增 --wrap/-w 可以替换 --dir/-d 使用，可以将其中的非文本内容也放进markdown中，以base64形式嵌入，可以被 --unwrap 还原。
 3. 新增 --view 将二进制可展示文件嵌入为能被markdown解析的形式，例如 图片、视频、文档等。
     - 默认：代码块标识为对应的文件类型，内容开头遵循`data:[MIME类型];base64,`。
     - --view：例如图片为`![图片文件名.png(如果是其他类型也需要修改)](data:image/png;base64,BASE64_ENCODED_DATA)`，其他的可能需要HTML（例如音频\<audio controls\>）的标签但是同理。
+4. 修复：--gitignore 不会忽略 .git 目录的问题。

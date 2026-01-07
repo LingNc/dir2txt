@@ -263,7 +263,9 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 
 		switch {
 		case arg == "--version" || arg == "-v":
-			fmt.Println("dir2txt " + version)
+			fmt.Printf("dir2txt %s\n", version)
+			fmt.Println("Author: LingNc")
+			fmt.Println("Repository: https://github.com/LingNc/dir2txt")
 			os.Exit(0)
 		case arg == "--help" || arg == "-h":
 			help = true
@@ -306,6 +308,7 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 				typ = TypeHard
 			}
 			config.UseGitignore = true
+			config.Rules = append(config.Rules, Rule{Pattern: ".git", Type: TypeHard})
 			config.Rules = append(config.Rules, Rule{IsGitignore: true, Type: typ})
 		case arg == "--config" || arg == "-c" || arg == "-fc":
 			if i+1 >= len(args) {
@@ -1351,7 +1354,8 @@ func processFile(path string, writer *bufio.Writer) error {
 
 	ext := strings.ToLower(filepath.Ext(path))
 	isForceText := config.TextExts[ext]
-	isBin := !isForceText && isBinary(content)
+	isSvg := ext == ".svg"
+	isBin := (!isForceText && isBinary(content)) || (isSvg && config.WrapMode)
 	displayPath := filepath.ToSlash(path)
 
 	if isBin {
@@ -1367,6 +1371,12 @@ func processFile(path string, writer *bufio.Writer) error {
 		fmt.Printf("[WRAP] %s (%s)\n", path, mime)
 
 		writer.WriteString(fmt.Sprintf("## File: %s\n\n", displayPath))
+
+		lang := strings.TrimPrefix(ext, ".")
+		if lang == "" {
+			lang = "base64"
+		}
+
 		if config.ViewMode {
 			switch {
 			case strings.HasPrefix(mime, "image/"):
@@ -1376,12 +1386,12 @@ func processFile(path string, writer *bufio.Writer) error {
 			case strings.HasPrefix(mime, "video/"):
 				writer.WriteString(fmt.Sprintf("<video controls src=\"%s\"></video>\n\n", dataURI))
 			default:
-				writer.WriteString("```base64\n")
+				writer.WriteString(fmt.Sprintf("```%s\n", lang))
 				writer.WriteString(dataURI)
 				writer.WriteString("\n```\n\n")
 			}
 		} else {
-			writer.WriteString("```base64\n")
+			writer.WriteString(fmt.Sprintf("```%s\n", lang))
 			writer.WriteString(dataURI)
 			writer.WriteString("\n```\n\n")
 		}
