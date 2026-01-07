@@ -37,7 +37,7 @@ go build dir2txt.go
 #### v1.7.1
 1. 修复：-f -F 参数情况下如果有范围过滤选项会覆盖掉后面的 ! 排除项。例如 dir2txt -d xxxx -f '*' '!xxxx.file' 会导致 xxxx.file 一起被排除。
 2. 新增：--gitignore 配置项，会按照git的排除方法对该文件夹中包含 .gitignore 进行排除，包括子文件夹的 .gitignore 就像git一样。并且使用该选项的时候会忽略原本自带的 build 等忽略项只会根据 .gitignore 中进行过滤（但是会过滤 .git文件夹）。该选项和 -Fc/-fc 互斥。
-3. 新增：--all 配置项，忽略默认排除项，例如 build/、__pycache__ 等，默认将所有文件加入。
+3. 新增：--all 配置项，忽略默认排除项，例如 build/、\_\_pycache\_\_ 等，默认将所有文件加入。
 
 #### v1.7.2
 1. 修复：-f -F 参数情况下排除项失效情况同v1.7.1，解决上次未完全修复。
@@ -68,3 +68,10 @@ go build dir2txt.go
 
 ### v1.8.0
 1. 新增 --unwrap 输入由 dir2txt 打包的单文件内容还原回文件夹结构。
+
+#### v1.8.1
+1. 新增 --version/-v 只显示版本号。
+2. 新增 --wrap/-w 可以替换 --dir/-d 使用，可以将其中的非文本内容也放进markdown中，以base64形式嵌入，可以被 --unwrap 还原。
+3. 新增 --view 将二进制可展示文件嵌入为能被markdown解析的形式，例如 图片、视频、文档等。
+    - 默认：代码块标识为对应的文件类型，内容开头遵循`data:[MIME类型];base64,`。
+    - --view：例如图片为`![图片文件名.png(如果是其他类型也需要修改)](data:image/png;base64,BASE64_ENCODED_DATA)`，其他的可能需要HTML（例如音频\<audio controls\>）的标签但是同理。
