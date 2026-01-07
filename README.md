@@ -37,7 +37,7 @@ go build dir2txt.go
 #### v1.7.1
 1. 修复：-f -F 参数情况下如果有范围过滤选项会覆盖掉后面的 ! 排除项。例如 dir2txt -d xxxx -f '*' '!xxxx.file' 会导致 xxxx.file 一起被排除。
 2. 新增：--gitignore 配置项，会按照git的排除方法对该文件夹中包含 .gitignore 进行排除，包括子文件夹的 .gitignore 就像git一样。并且使用该选项的时候会忽略原本自带的 build 等忽略项只会根据 .gitignore 中进行过滤（但是会过滤 .git文件夹）。该选项和 -Fc/-fc 互斥。
-3. 新增：--all 配置项，忽略前面所有的规则（最开始用可以清除默认的硬过滤），例如 build/、__pycache__ 等，默认将所有文件加入。
+3. 新增：--all 配置项，忽略默认排除项，例如 build/、__pycache__ 等，默认将所有文件加入。
 
 #### v1.7.2
 1. 修复：-f -F 参数情况下排除项失效情况同v1.7.1，解决上次未完全修复。
@@ -61,3 +61,7 @@ go build dir2txt.go
 3. dir2txt -f --gitignore 可以根据 .gitignore 规则进行软过滤。
 4. dir2txt --all --gitignore 可以先清除所有规则之后再应用规则。
 5. dir2txt -F src/ -f src/main.go 可以将 src 目录完全过滤掉，但是保留 main.go 文件。
+
+#### v1.7.4
+1. 新增 --default 命令用来添加默认规排除规则。
+2. 调整 --all 行为为清除之前的所有规则。

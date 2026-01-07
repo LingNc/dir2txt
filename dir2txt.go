@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	version         = "v1.7.3"
+	version         = "v1.7.4"
 	maxDisplayFiles = 24
 	keepHeadFiles   = 8
 	keepTailFiles   = 8
@@ -241,6 +241,18 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, error) {
 		return strings.HasPrefix(s, "!") || strings.ContainsAny(s, "*?[]")
 	}
 
+	appendDefaults := func() {
+		for _, d := range defaultHardDirs {
+			config.Rules = append(config.Rules, Rule{Pattern: d, Type: TypeHard})
+		}
+		for _, f := range defaultHardFiles {
+			config.Rules = append(config.Rules, Rule{Pattern: f, Type: TypeHard})
+		}
+		for _, ext := range defaultSoftExts {
+			config.Rules = append(config.Rules, Rule{Pattern: "*" + ext, Type: TypeSoft})
+		}
+	}
+
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 
@@ -254,6 +266,8 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, error) {
 		case arg == "--all":
 			config.ShowAll = true
 			config.Rules = nil
+		case arg == "--default":
+			appendDefaults()
 		case arg == "--no-fold":
 			config.NoFold = true
 		case arg == "--gitignore":
@@ -600,7 +614,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "示例:\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --dir . ../other --filter '*.png *.jpg' '!keep.png'\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt -F build/ -f --gitignore '!build/app.exe'\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt -F src/ -f src/ src/main.go\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt . -F src/ -f src/ src/main.go\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "参数:\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --dir/-d      指定要扫描的目录，可重复；也可用位置参数追加目录\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --filter/-f   软过滤：跳过内容输出，目录与树仍显示；同时切换后续模式为软\n")
@@ -608,15 +622,18 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  --config/-c   指定配置文件路径 (默认按当前上下文，缺省为软)；行首 # 为注释\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  -fc           指定配置文件路径 (始终作为软过滤)；行首 # 为注释\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  -Fc           指定配置文件路径 (始终作为硬过滤)；行首 # 为注释\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --all         移除内置默认规则，规则列表从空开始\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --all         清空当前已加载的所有规则 (重置为空)\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --default     在当前规则链位置追加内置默认规则\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --gitignore   将 .gitignore 匹配结果插入规则列表，动作由当前上下文决定 (默认硬)\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  Pattern 语法: ? 单字符 (test?.log); * 任意串 (*.go); [] 字符范围 (file[0-9].txt); 前缀 ! 取反 (!important.txt)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --out/-o      指定输出文件路径或输出目录\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --no-fold     在目录树中不折叠长文件列表，始终显示全部文件 (默认超过 %d 个文件折叠)\n", maxDisplayFiles)
 		fmt.Fprintf(flag.CommandLine.Output(), "  --install     安装程序到系统 (Linux: /usr/local/bin; Windows: Program Files 并添加 PATH)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --uninstall   从系统中卸载程序\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  位置参数      未被 --dir 消耗的参数：若含 * ? [] 或以 ! 开头视为软过滤，其它视为目录\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --help/-h     显示此帮助\n")
+		// 说明
+		fmt.Fprintf(flag.CommandLine.Output(), "说明：\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  Pattern 语法: ? 单字符 (test?.log); * 任意串 (*.go); [] 字符范围 (file[0-9].txt); 前缀 ! 取反 (!important.txt)\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  位置参数      未被 --dir 消耗的参数：若含 * ? [] 或以 ! 开头视为软过滤，其它视为目录\n")
 	}
 
 	parsedDirs, outFlag, help, install, uninstall, err := parseCommandLine()
