@@ -77,6 +77,7 @@ go build dir2txt.go
     - --view：例如图片为`![图片文件名.png(如果是其他类型也需要修改)](data:image/png;base64,BASE64_ENCODED_DATA)`，其他的可能需要HTML（例如音频\<audio controls\>）的标签但是同理。
 4. 修复：--gitignore 不会忽略 .git 目录的问题。
 5. 修复：在win下使用 --install 安装的时候出现的乱码情况。
+6. 删除：暂时移除 --unwrap 功能。
 
 ## 计划
 1. 移除 -Fc/-fc 配置项，使用一种新的解析配置的方式来规定配置文件包括支持的内容，保留 --config 进行调用。
