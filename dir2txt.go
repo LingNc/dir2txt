@@ -1321,6 +1321,9 @@ func manageWindows(isInstall bool) error {
 
 	cmd := exec.Command("powershell", "-Command", psScript)
 	output, err := cmd.CombinedOutput()
+	if utf8Output, _, convErr := convertToUTF8(output); convErr == nil {
+		output = utf8Output
+	}
 	if err != nil {
 		fmt.Printf("[WARNING] 环境变量自动设置失败: %v\n详情: %s\n请手动将 %s 添加到 PATH\n", err, string(output), installDir)
 	} else {

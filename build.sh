@@ -28,5 +28,9 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "${BUILD_PA
 echo "Building Windows (arm64)..."
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -o "${BUILD_PATH}/${APP_NAME}_windows_arm64.exe" $SRC_FILE
 
+# 5. Android arm64
+echo "Building Android (arm64)..."
+CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -ldflags="-s -w" -o "${BUILD_PATH}/${APP_NAME}_android_arm64" $SRC_FILE
+
 echo "构建完成！文件已生成在目录 ${BUILD_PATH}。"
 ls -lh "$BUILD_PATH"
