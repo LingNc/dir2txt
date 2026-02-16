@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path"
@@ -21,7 +23,7 @@ import (
 )
 
 const (
-	version         = "v1.8.0"
+	version         = "v1.8.1"
 	maxDisplayFiles = 24
 	keepHeadFiles   = 8
 	keepTailFiles   = 8
@@ -49,6 +51,8 @@ type Config struct {
 	ShowAll      bool            // 是否展示所有文件，忽略内置过滤
 	UseGitignore bool            // 是否启用 .gitignore 规则
 	Rules        []Rule          // 线性有序规则
+	WrapMode     bool            // 是否对二进制文件进行 Base64 打包
+	ViewMode     bool            // 是否输出可视化预览标记
 }
 
 // walkFollowSymlinks 遍历目录，跟随符号链接的目录，保持逻辑路径用于过滤
@@ -258,6 +262,11 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 		arg := args[i]
 
 		switch {
+		case arg == "--version" || arg == "-v":
+			fmt.Printf("dir2txt %s\n", version)
+			fmt.Println("Author: LingNc")
+			fmt.Println("Repository: https://github.com/LingNc/dir2txt")
+			os.Exit(0)
 		case arg == "--help" || arg == "-h":
 			help = true
 		case arg == "--install":
@@ -270,6 +279,21 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 			}
 			unwrapFile = args[i+1]
 			i++
+			continue
+		case arg == "--view":
+			config.ViewMode = true
+			continue
+		case arg == "--wrap" || arg == "-w":
+			config.WrapMode = true
+			consumed := 0
+			for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				dirs.Set(args[i])
+				consumed++
+			}
+			if consumed == 0 {
+				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--wrap 需要指定一个路径 (用法同 --dir)")
+			}
 			continue
 		case arg == "--all":
 			config.ShowAll = true
@@ -284,6 +308,7 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 				typ = TypeHard
 			}
 			config.UseGitignore = true
+			config.Rules = append(config.Rules, Rule{Pattern: ".git", Type: TypeHard})
 			config.Rules = append(config.Rules, Rule{IsGitignore: true, Type: typ})
 		case arg == "--config" || arg == "-c" || arg == "-fc":
 			if i+1 >= len(args) {
@@ -359,6 +384,11 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 			}
 		case strings.HasPrefix(arg, "--dir="):
 			dirs.Set(strings.TrimPrefix(arg, "--dir="))
+		case strings.HasPrefix(arg, "--wrap=") || strings.HasPrefix(arg, "-w="):
+			config.WrapMode = true
+			trimmed := strings.TrimPrefix(strings.TrimPrefix(arg, "--wrap="), "-w=")
+			dirs.Set(trimmed)
+			continue
 		case arg == "--filter" || arg == "-filter" || arg == "-f":
 			currentType = TypeSoft
 			contextSet = true
@@ -597,6 +627,8 @@ var config = Config{
 		".sh": true, ".bat": true, ".conf": true, ".toml": true,
 	},
 	MaxFileSize: 1024 * 1024, // 1MB
+	WrapMode:    false,
+	ViewMode:    false,
 }
 
 func initRules() {
@@ -623,9 +655,12 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --dir . ../other --filter '*.png *.jpg' '!keep.png'\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt -F build/ -f --gitignore '!build/app.exe'\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt . -F src/ -f src/ src/main.go\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --unwrap project_context.md\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --unwrap project_context.md  (暂时停用)\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --wrap ./assets --view -o assets_context.md\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "参数:\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --version/-v  查看版本号\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --dir/-d      指定要扫描的目录，可重复；也可用位置参数追加目录\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --wrap/-w     开启打包模式并指定目录 (同 --dir)，二进制转 Base64 嵌入\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --filter/-f   软过滤：跳过内容输出，目录与树仍显示；同时切换后续模式为软\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --Filter/-F   硬过滤：目录树和文件内容都不显示；同时切换后续模式为硬\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --config/-c   指定配置文件路径 (默认按当前上下文，缺省为软)；行首 # 为注释\n")
@@ -634,7 +669,8 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  --all         清空当前已加载的所有规则 (重置为空)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --default     在当前规则链位置追加内置默认规则\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --gitignore   将 .gitignore 匹配结果插入规则列表，动作由当前上下文决定 (默认硬)\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --unwrap      读取 _context.md 并还原文件内容到当前目录 (可配合 --out 指定目标)\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --unwrap      暂时停用\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --view        预览模式：为图片/音视频生成可直接预览的嵌入\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --out/-o      指定输出文件路径或输出目录\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --no-fold     在目录树中不折叠长文件列表，始终显示全部文件 (默认超过 %d 个文件折叠)\n", maxDisplayFiles)
 		fmt.Fprintf(flag.CommandLine.Output(), "  --install     安装程序到系统 (Linux: /usr/local/bin; Windows: Program Files 并添加 PATH)\n")
@@ -658,11 +694,8 @@ func main() {
 	}
 
 	if unwrapFile != "" {
-		if err := unwrapProcess(unwrapFile, outFlag); err != nil {
-			fmt.Fprintf(os.Stderr, "解包失败: %v\n", err)
-			os.Exit(1)
-		}
-		return
+		fmt.Fprintln(os.Stderr, "错误: --unwrap 功能暂时停用")
+		os.Exit(1)
 	}
 
 	if install {
@@ -954,6 +987,32 @@ func unwrapProcess(mdFile string, outputDir string) error {
 	var fileContent bytes.Buffer
 	fileCount := 0
 
+	flushBuffer := func(isData bool) {
+		if currentRelPath == "" {
+			fileContent.Reset()
+			return
+		}
+		fullDest := filepath.Join(targetDir, currentRelPath)
+		if isData {
+			payload := strings.TrimSpace(fileContent.String())
+			if err := restoreFromDataURI(payload, fullDest); err != nil {
+				fmt.Printf("[ERR] 写入失败 %s: %v\n", currentRelPath, err)
+			} else {
+				fmt.Printf("[RESTORE] %s\n", currentRelPath)
+				fileCount++
+			}
+		} else {
+			if err := writeRestoredFileDirect(fullDest, fileContent.Bytes()); err != nil {
+				fmt.Printf("[ERR] 写入失败 %s: %v\n", currentRelPath, err)
+			} else {
+				fmt.Printf("[RESTORE] %s\n", currentRelPath)
+				fileCount++
+			}
+		}
+		fileContent.Reset()
+		currentRelPath = ""
+	}
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -967,22 +1026,18 @@ func unwrapProcess(mdFile string, outputDir string) error {
 			continue
 		}
 
+		if currentRelPath == "" {
+			continue
+		}
+
 		if strings.HasPrefix(line, "```") {
 			if inCodeBlock {
-				if currentRelPath != "" {
-					fullDest := filepath.Join(targetDir, currentRelPath)
-					if err := writeRestoredFileDirect(fullDest, fileContent.Bytes()); err != nil {
-						fmt.Printf("[ERR] 写入失败 %s: %v\n", currentRelPath, err)
-					} else {
-						fmt.Printf("[RESTORE] %s\n", currentRelPath)
-						fileCount++
-					}
-				}
-				currentRelPath = ""
-				fileContent.Reset()
+				payload := strings.TrimSpace(fileContent.String())
+				flushBuffer(isDataURI(payload))
 				inCodeBlock = false
-			} else if currentRelPath != "" {
+			} else {
 				inCodeBlock = true
+				fileContent.Reset()
 			}
 			continue
 		}
@@ -990,6 +1045,21 @@ func unwrapProcess(mdFile string, outputDir string) error {
 		if inCodeBlock {
 			fileContent.WriteString(line)
 			fileContent.WriteByte('\n')
+			continue
+		}
+
+		if uri := extractDataURIFromMarkdown(line); uri != "" {
+			fileContent.Reset()
+			fileContent.WriteString(uri)
+			flushBuffer(true)
+			continue
+		}
+
+		if uri := extractDataURIFromHTML(line); uri != "" {
+			fileContent.Reset()
+			fileContent.WriteString(uri)
+			flushBuffer(true)
+			continue
 		}
 	}
 
@@ -1063,6 +1133,64 @@ func sanitizeRelPath(p string) string {
 	p = strings.TrimPrefix(p, "./")
 	p = strings.ReplaceAll(p, "../", "")
 	return filepath.Clean(p)
+}
+
+func isDataURI(s string) bool {
+	return strings.HasPrefix(s, "data:") && strings.Contains(s, ";base64,")
+}
+
+func extractDataURIFromMarkdown(line string) string {
+	start := strings.Index(line, "(")
+	end := strings.LastIndex(line, ")")
+	if start == -1 || end == -1 || end <= start+1 {
+		return ""
+	}
+	candidate := strings.TrimSpace(line[start+1 : end])
+	if isDataURI(candidate) {
+		return candidate
+	}
+	return ""
+}
+
+func extractDataURIFromHTML(line string) string {
+	idx := strings.Index(line, "src=")
+	if idx == -1 {
+		return ""
+	}
+	fragment := line[idx+4:]
+	if len(fragment) == 0 {
+		return ""
+	}
+	quote := fragment[0]
+	if quote != '"' && quote != '\'' {
+		return ""
+	}
+	fragment = fragment[1:]
+	end := strings.IndexRune(fragment, rune(quote))
+	if end == -1 {
+		return ""
+	}
+	candidate := strings.TrimSpace(fragment[:end])
+	if isDataURI(candidate) {
+		return candidate
+	}
+	return ""
+}
+
+func restoreFromDataURI(dataURI string, destPath string) error {
+	if !isDataURI(dataURI) {
+		return fmt.Errorf("非标准 Data URI")
+	}
+	idx := strings.Index(dataURI, ";base64,")
+	if idx == -1 {
+		return fmt.Errorf("未找到 base64 标记")
+	}
+	raw := dataURI[idx+len(";base64,"):]
+	data, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return err
+	}
+	return writeRestoredFileDirect(destPath, data)
 }
 
 // writeRestoredFileDirect 直接按绝对路径写入，确保目录存在并移除结尾换行
@@ -1190,6 +1318,9 @@ func manageWindows(isInstall bool) error {
 
 	cmd := exec.Command("powershell", "-Command", psScript)
 	output, err := cmd.CombinedOutput()
+	if utf8Output, _, convErr := convertToUTF8(output); convErr == nil {
+		output = utf8Output
+	}
 	if err != nil {
 		fmt.Printf("[WARNING] 环境变量自动设置失败: %v\n详情: %s\n请手动将 %s 添加到 PATH\n", err, string(output), installDir)
 	} else {
@@ -1202,13 +1333,11 @@ func manageWindows(isInstall bool) error {
 
 // processFile 读取文件并格式化写入 Markdown
 func processFile(path string, writer *bufio.Writer) error {
-	// 1. 获取文件信息与大小检查
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil
 	}
 
-	// 软链接指向目录时跳过内容读取
 	if info.IsDir() {
 		fmt.Printf("[SKIP] 软链接指向目录: %s\n", path)
 		return nil
@@ -1218,7 +1347,6 @@ func processFile(path string, writer *bufio.Writer) error {
 		return nil
 	}
 
-	// 2. 读取文件内容
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -1226,14 +1354,51 @@ func processFile(path string, writer *bufio.Writer) error {
 
 	ext := strings.ToLower(filepath.Ext(path))
 	isForceText := config.TextExts[ext]
+	isSvg := ext == ".svg"
+	isBin := (!isForceText && isBinary(content)) || (isSvg && config.WrapMode)
+	displayPath := filepath.ToSlash(path)
 
-	// 3. 二进制检查（非白名单才检查）
-	if !isForceText && isBinary(content) {
-		fmt.Printf("[SKIP] 检测到二进制文件: %s\n", path)
+	if isBin {
+		if !config.WrapMode {
+			fmt.Printf("[SKIP] 检测到二进制文件: %s\n", path)
+			return nil
+		}
+
+		mime := getMimeType(content, path)
+		b64 := base64.StdEncoding.EncodeToString(content)
+		dataURI := "data:" + mime + ";base64," + b64
+
+		fmt.Printf("[WRAP] %s (%s)\n", path, mime)
+
+		writer.WriteString(fmt.Sprintf("## File: %s\n\n", displayPath))
+
+		lang := strings.TrimPrefix(ext, ".")
+		if lang == "" {
+			lang = "base64"
+		}
+
+		if config.ViewMode {
+			switch {
+			case strings.HasPrefix(mime, "image/"):
+				writer.WriteString(fmt.Sprintf("![%s](%s)\n\n", filepath.Base(displayPath), dataURI))
+			case strings.HasPrefix(mime, "audio/"):
+				writer.WriteString(fmt.Sprintf("<audio controls src=\"%s\"></audio>\n\n", dataURI))
+			case strings.HasPrefix(mime, "video/"):
+				writer.WriteString(fmt.Sprintf("<video controls src=\"%s\"></video>\n\n", dataURI))
+			default:
+				writer.WriteString(fmt.Sprintf("```%s\n", lang))
+				writer.WriteString(dataURI)
+				writer.WriteString("\n```\n\n")
+			}
+		} else {
+			writer.WriteString(fmt.Sprintf("```%s\n", lang))
+			writer.WriteString(dataURI)
+			writer.WriteString("\n```\n\n")
+		}
+		writer.WriteString("---\n\n")
 		return nil
 	}
 
-	// 4. 编码检测与转换
 	utf8Content, encoding, err := convertToUTF8(content)
 	if err != nil {
 		fmt.Printf("[WARN] 无法识别文件编码 (已跳过): %s\n", path)
@@ -1241,18 +1406,12 @@ func processFile(path string, writer *bufio.Writer) error {
 		return nil
 	}
 
-	// 5. 如果发生了转码，发出通知
 	if encoding != "UTF-8" {
 		fmt.Printf("[INFO] 自动转换编码 [%s -> UTF-8]: %s\n", encoding, path)
 	}
 
-	// 6. 写入 Markdown
 	fmt.Printf("正在处理: %s\n", path)
 
-	// 标准化路径分隔符
-	displayPath := filepath.ToSlash(path)
-
-	// 确定代码块语言标记
 	codeBlockLang := strings.TrimPrefix(ext, ".")
 	if codeBlockLang == "" {
 		codeBlockLang = "text"
@@ -1262,7 +1421,6 @@ func processFile(path string, writer *bufio.Writer) error {
 	writer.WriteString(fmt.Sprintf("```%s\n", codeBlockLang))
 	writer.Write(utf8Content)
 
-	// 确保代码块如果没换行符结尾，手动补一个
 	if len(utf8Content) > 0 && utf8Content[len(utf8Content)-1] != '\n' {
 		writer.WriteString("\n")
 	}
@@ -1324,6 +1482,26 @@ func isBinary(content []byte) bool {
 	}
 
 	return false
+}
+
+func getMimeType(data []byte, filename string) string {
+	head := data
+	if len(head) > 512 {
+		head = head[:512]
+	}
+	mime := http.DetectContentType(head)
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".css":
+		return "text/css"
+	case ".js":
+		return "application/javascript"
+	case ".json":
+		return "application/json"
+	case ".svg":
+		return "image/svg+xml"
+	}
+	return mime
 }
 
 // convertToUTF8 尝试将内容转换为 UTF-8
