@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version         = "v1.8.1"
+	version         = "v1.8.2"
 	maxDisplayFiles = 24
 	keepHeadFiles   = 8
 	keepTailFiles   = 8
@@ -655,7 +655,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --dir . ../other --filter '*.png *.jpg' '!keep.png'\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt -F build/ -f --gitignore '!build/app.exe'\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt . -F src/ -f src/ src/main.go\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --unwrap project_context.md  (暂时停用)\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --unwrap project_context.md\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --wrap ./assets --view -o assets_context.md\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "参数:\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --version/-v  查看版本号\n")
@@ -669,7 +669,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  --all         清空当前已加载的所有规则 (重置为空)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --default     在当前规则链位置追加内置默认规则\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --gitignore   将 .gitignore 匹配结果插入规则列表，动作由当前上下文决定 (默认硬)\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --unwrap      暂时停用\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --unwrap      读取 _context.md 并还原文件内容到当前目录 (可配合 --out 指定目标)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --view        预览模式：为图片/音视频生成可直接预览的嵌入\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --out/-o      指定输出文件路径或输出目录\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --no-fold     在目录树中不折叠长文件列表，始终显示全部文件 (默认超过 %d 个文件折叠)\n", maxDisplayFiles)
@@ -694,8 +694,11 @@ func main() {
 	}
 
 	if unwrapFile != "" {
-		fmt.Fprintln(os.Stderr, "错误: --unwrap 功能暂时停用")
-		os.Exit(1)
+		if err := unwrapProcess(unwrapFile, outFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "解包失败: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if install {
@@ -911,6 +914,27 @@ func processDirs(dirs []string, writer *bufio.Writer, finalOutPath string) error
 	return firstErr
 }
 
+// readLongLine 按块读取任意长度的单行，突破 Scanner 64KB token 限制
+func readLongLine(r *bufio.Reader) (string, error) {
+	var builder strings.Builder
+	for {
+		lineChunk, isPrefix, err := r.ReadLine()
+		if err != nil {
+			if err == io.EOF && builder.Len() > 0 {
+				return builder.String(), nil
+			}
+			return builder.String(), err
+		}
+
+		builder.Write(lineChunk)
+
+		if !isPrefix {
+			break
+		}
+	}
+	return builder.String(), nil
+}
+
 // unwrapProcess 读取由 dir2txt 生成的 markdown，并按文件块还原内容
 func unwrapProcess(mdFile string, outputDir string) error {
 	// === 第一遍扫描：分析结构与路径 ===
@@ -918,14 +942,21 @@ func unwrapProcess(mdFile string, outputDir string) error {
 	if err != nil {
 		return fmt.Errorf("无法打开文件: %w", err)
 	}
+	defer f.Close()
 
 	var detectedRoot string
 	var allPaths []string
 	var inStructureBlock bool
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
+	reader1 := bufio.NewReaderSize(f, 64*1024)
+	for {
+		line, err := readLongLine(reader1)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
 
 		if strings.HasPrefix(line, "# Project Structure") {
 			inStructureBlock = true
@@ -952,7 +983,6 @@ func unwrapProcess(mdFile string, outputDir string) error {
 			allPaths = append(allPaths, raw)
 		}
 	}
-	f.Close()
 
 	if len(allPaths) == 0 {
 		return fmt.Errorf("未在文件中找到任何 '## File:' 标记")
@@ -980,7 +1010,7 @@ func unwrapProcess(mdFile string, outputDir string) error {
 		return err
 	}
 	defer f.Close()
-	scanner = bufio.NewScanner(f)
+	reader2 := bufio.NewReaderSize(f, 64*1024)
 
 	var currentRelPath string
 	var inCodeBlock bool
@@ -1013,8 +1043,14 @@ func unwrapProcess(mdFile string, outputDir string) error {
 		currentRelPath = ""
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, err := readLongLine(reader2)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
 
 		if strings.HasPrefix(line, "## File: ") {
 			raw := strings.TrimSpace(strings.TrimPrefix(line, "## File: "))
@@ -1061,10 +1097,6 @@ func unwrapProcess(mdFile string, outputDir string) error {
 			flushBuffer(true)
 			continue
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return err
 	}
 
 	if inCodeBlock && currentRelPath != "" {
