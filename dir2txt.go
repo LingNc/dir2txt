@@ -655,7 +655,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --dir . ../other --filter '*.png *.jpg' '!keep.png'\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt -F build/ -f --gitignore '!build/app.exe'\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt . -F src/ -f src/ src/main.go\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --unwrap project_context.md\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --unwrap project_context.md  (暂时停用)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --wrap ./assets --view -o assets_context.md\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "参数:\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --version/-v  查看版本号\n")
@@ -669,7 +669,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  --all         清空当前已加载的所有规则 (重置为空)\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --default     在当前规则链位置追加内置默认规则\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --gitignore   将 .gitignore 匹配结果插入规则列表，动作由当前上下文决定 (默认硬)\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --unwrap      读取 _context.md 并还原文件内容到当前目录 (可配合 --out 指定目标)\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  --unwrap      暂时停用\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --view        预览模式：为图片/音视频生成可直接预览的嵌入\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --out/-o      指定输出文件路径或输出目录\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  --no-fold     在目录树中不折叠长文件列表，始终显示全部文件 (默认超过 %d 个文件折叠)\n", maxDisplayFiles)
@@ -694,11 +694,8 @@ func main() {
 	}
 
 	if unwrapFile != "" {
-		if err := unwrapProcess(unwrapFile, outFlag); err != nil {
-			fmt.Fprintf(os.Stderr, "解包失败: %v\n", err)
-			os.Exit(1)
-		}
-		return
+		fmt.Fprintln(os.Stderr, "错误: --unwrap 功能暂时停用")
+		os.Exit(1)
 	}
 
 	if install {
