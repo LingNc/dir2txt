@@ -218,6 +218,26 @@ func (e *SimpleDirEntry) IsDir() bool                { return e.isDir }
 func (e *SimpleDirEntry) Type() os.FileMode          { return 0 }
 func (e *SimpleDirEntry) Info() (os.FileInfo, error) { return nil, nil }
 
+// printUsageSynopsis 打印紧凑的语法摘要
+func printUsageSynopsis(out io.Writer) {
+	fmt.Fprintf(out, "用法: dir2txt [-v | --version] [-h | --help]\n")
+	fmt.Fprintf(out, "              [-d | --dir <path>...] [-w | --wrap <path>...]\n")
+	fmt.Fprintf(out, "              [-f | --filter <pattern>...] [-F | --Filter <pattern>...]\n")
+	fmt.Fprintf(out, "              [--unwrap <file>] [-R | --recursive]\n")
+	fmt.Fprintf(out, "              [-o | --out <path>] [--view] [--no-fold]\n")
+	fmt.Fprintf(out, "              [--all] [--default] [--gitignore]\n")
+	fmt.Fprintf(out, "              [--install] [--uninstall]\n")
+	fmt.Fprintf(out, "              [dir|pattern ...]\n")
+}
+
+// cliError 输出简洁错误并引导查看帮助，避免刷屏
+func cliError(msg string) {
+	fmt.Fprintf(os.Stderr, "错误: %s\n", msg)
+	printUsageSynopsis(os.Stderr)
+	fmt.Fprintln(os.Stderr, "\n(运行 'dir2txt --help' 查看完整说明)")
+	os.Exit(1)
+}
+
 func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error) {
 	var dirs rawStringList
 	var out string
@@ -276,7 +296,7 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 			uninstall = true
 		case arg == "--unwrap":
 			if i+1 >= len(args) {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--unwrap 需要指定一个 markdown 文件路径")
+				cliError("--unwrap 需要指定一个 markdown 文件路径")
 			}
 			unwrapFile = args[i+1]
 			i++
@@ -296,7 +316,7 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 				consumed++
 			}
 			if consumed == 0 {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--wrap 需要指定一个路径 (用法同 --dir)")
+				cliError("--wrap 需要指定目录路径")
 			}
 			continue
 		case arg == "--all":
@@ -314,68 +334,6 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 			config.UseGitignore = true
 			config.Rules = append(config.Rules, Rule{Pattern: ".git", Type: TypeHard})
 			config.Rules = append(config.Rules, Rule{IsGitignore: true, Type: typ})
-		case arg == "--config" || arg == "-c" || arg == "-fc":
-			if i+1 >= len(args) {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--config 需要一个文件路径")
-			}
-			i++
-			patterns, err := loadPatternsFromFile(args[i])
-			if err != nil {
-				return dirs, out, help, install, uninstall, unwrapFile, err
-			}
-			typ := TypeSoft
-			if arg == "--config" || arg == "-c" {
-				if contextSet {
-					typ = currentType
-				}
-			}
-			for _, p := range patterns {
-				appendRule(p, typ)
-			}
-		case strings.HasPrefix(arg, "--config="):
-			patterns, err := loadPatternsFromFile(strings.TrimPrefix(arg, "--config="))
-			if err != nil {
-				return dirs, out, help, install, uninstall, unwrapFile, err
-			}
-			typ := TypeSoft
-			if contextSet {
-				typ = currentType
-			}
-			for _, p := range patterns {
-				appendRule(p, typ)
-			}
-		case strings.HasPrefix(arg, "-fc="):
-			patterns, err := loadPatternsFromFile(strings.TrimPrefix(arg, "-fc="))
-			if err != nil {
-				return dirs, out, help, install, uninstall, unwrapFile, err
-			}
-			for _, p := range patterns {
-				appendRule(p, TypeSoft)
-			}
-		case arg == "-Fc":
-			if i+1 >= len(args) {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("-Fc 需要一个文件路径")
-			}
-			i++
-			patterns, err := loadPatternsFromFile(args[i])
-			if err != nil {
-				return dirs, out, help, install, uninstall, unwrapFile, err
-			}
-			for _, p := range patterns {
-				appendRule(p, TypeHard)
-			}
-			currentType = TypeHard
-			contextSet = true
-		case strings.HasPrefix(arg, "-Fc="):
-			patterns, err := loadPatternsFromFile(strings.TrimPrefix(arg, "-Fc="))
-			if err != nil {
-				return dirs, out, help, install, uninstall, unwrapFile, err
-			}
-			for _, p := range patterns {
-				appendRule(p, TypeHard)
-			}
-			currentType = TypeHard
-			contextSet = true
 		case arg == "--dir" || arg == "-d":
 			consumed := 0
 			for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
@@ -384,7 +342,7 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 				consumed++
 			}
 			if consumed == 0 {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--dir 需要一个路径")
+				cliError("--dir 需要指定目录路径")
 			}
 		case strings.HasPrefix(arg, "--dir="):
 			dirs.Set(strings.TrimPrefix(arg, "--dir="))
@@ -425,7 +383,7 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 			appendRule(strings.TrimPrefix(arg, "-Filter="), TypeHard)
 		case arg == "--out" || arg == "-o":
 			if i+1 >= len(args) {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--out 需要一个路径")
+				cliError(arg + " 需要指定一个输出路径")
 			}
 			i++
 			out = args[i]
@@ -445,6 +403,9 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 			}
 			i = len(args)
 		default:
+			if strings.HasPrefix(arg, "-") && len(arg) > 1 {
+				cliError(fmt.Sprintf("未知选项: %s", arg))
+			}
 			if isPatternArg(arg) {
 				typ := currentType
 				if !contextSet {
@@ -458,7 +419,7 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 	}
 
 	if install && uninstall {
-		return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--install 与 --uninstall 不能同时使用")
+		cliError("--install 与 --uninstall 不能同时使用")
 	}
 
 	return dirs, out, help, install, uninstall, unwrapFile, nil
@@ -658,7 +619,7 @@ func main() {
 		}
 
 		fmt.Fprintf(flag.CommandLine.Output(), "dir2txt %s\n", version)
-		fmt.Fprintf(flag.CommandLine.Output(), "用法: dir2txt [--dir <path> ...] [--filter <pattern> ...] [dir|pattern ...]\n")
+		printUsageSynopsis(flag.CommandLine.Output())
 		fmt.Fprintf(flag.CommandLine.Output(), "示例:\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --dir . ../other --filter '*.png *.jpg' '!keep.png'\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt -F build/ -f --gitignore '!build/app.exe'\n")
@@ -671,9 +632,6 @@ func main() {
 		printOption("--wrap/-w", "开启打包模式并指定目录 (同 --dir)，二进制转 Base64 嵌入")
 		printOption("--filter/-f", "软过滤：跳过内容输出，目录与树仍显示；同时切换后续模式为软")
 		printOption("--Filter/-F", "硬过滤：目录树和文件内容都不显示；同时切换后续模式为硬")
-		printOption("--config/-c", "指定配置文件路径 (默认按当前上下文，缺省为软)；行首 # 为注释")
-		printOption("-fc", "指定配置文件路径 (始终作为软过滤)；行首 # 为注释")
-		printOption("-Fc", "指定配置文件路径 (始终作为硬过滤)；行首 # 为注释")
 		printOption("--all", "清空当前已加载的所有规则 (重置为空)")
 		printOption("--default", "在当前规则链位置追加内置默认规则")
 		printOption("--gitignore", "将 .gitignore 匹配结果插入规则列表，动作由当前上下文决定 (默认硬)")
@@ -697,9 +655,7 @@ func main() {
 		return
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
-		flag.Usage()
-		os.Exit(1)
+		cliError(err.Error())
 	}
 
 	if unwrapFile != "" {
