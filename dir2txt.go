@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version         = "v1.8.1"
+	version         = "v1.8.2"
 	maxDisplayFiles = 24
 	keepHeadFiles   = 8
 	keepTailFiles   = 8
@@ -53,6 +53,7 @@ type Config struct {
 	Rules        []Rule          // 线性有序规则
 	WrapMode     bool            // 是否对二进制文件进行 Base64 打包
 	ViewMode     bool            // 是否输出可视化预览标记
+	Recursive    bool            // 是否递归展开嵌套的 _context.md
 }
 
 // walkFollowSymlinks 遍历目录，跟随符号链接的目录，保持逻辑路径用于过滤
@@ -217,6 +218,26 @@ func (e *SimpleDirEntry) IsDir() bool                { return e.isDir }
 func (e *SimpleDirEntry) Type() os.FileMode          { return 0 }
 func (e *SimpleDirEntry) Info() (os.FileInfo, error) { return nil, nil }
 
+// printUsageSynopsis 打印紧凑的语法摘要
+func printUsageSynopsis(out io.Writer) {
+	fmt.Fprintf(out, "用法: dir2txt [-v | --version] [-h | --help]\n")
+	fmt.Fprintf(out, "              [-d | --dir <path>...] [-w | --wrap <path>...]\n")
+	fmt.Fprintf(out, "              [-f | --filter <pattern>...] [-F | --Filter <pattern>...]\n")
+	fmt.Fprintf(out, "              [--unwrap <file>] [-R | --recursive]\n")
+	fmt.Fprintf(out, "              [-o | --out <path>] [--view] [--no-fold]\n")
+	fmt.Fprintf(out, "              [--all] [--default] [--gitignore]\n")
+	fmt.Fprintf(out, "              [--install] [--uninstall]\n")
+	fmt.Fprintf(out, "              [dir|pattern ...]\n")
+}
+
+// cliError 输出简洁错误并引导查看帮助，避免刷屏
+func cliError(msg string) {
+	fmt.Fprintf(os.Stderr, "错误: %s\n", msg)
+	printUsageSynopsis(os.Stderr)
+	fmt.Fprintln(os.Stderr, "\n(运行 'dir2txt --help' 查看完整说明)")
+	os.Exit(1)
+}
+
 func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error) {
 	var dirs rawStringList
 	var out string
@@ -275,10 +296,13 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 			uninstall = true
 		case arg == "--unwrap":
 			if i+1 >= len(args) {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--unwrap 需要指定一个 markdown 文件路径")
+				cliError("--unwrap 需要指定一个 markdown 文件路径")
 			}
 			unwrapFile = args[i+1]
 			i++
+			continue
+		case arg == "--recursive" || arg == "-R":
+			config.Recursive = true
 			continue
 		case arg == "--view":
 			config.ViewMode = true
@@ -292,7 +316,7 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 				consumed++
 			}
 			if consumed == 0 {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--wrap 需要指定一个路径 (用法同 --dir)")
+				cliError("--wrap 需要指定目录路径")
 			}
 			continue
 		case arg == "--all":
@@ -310,68 +334,6 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 			config.UseGitignore = true
 			config.Rules = append(config.Rules, Rule{Pattern: ".git", Type: TypeHard})
 			config.Rules = append(config.Rules, Rule{IsGitignore: true, Type: typ})
-		case arg == "--config" || arg == "-c" || arg == "-fc":
-			if i+1 >= len(args) {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--config 需要一个文件路径")
-			}
-			i++
-			patterns, err := loadPatternsFromFile(args[i])
-			if err != nil {
-				return dirs, out, help, install, uninstall, unwrapFile, err
-			}
-			typ := TypeSoft
-			if arg == "--config" || arg == "-c" {
-				if contextSet {
-					typ = currentType
-				}
-			}
-			for _, p := range patterns {
-				appendRule(p, typ)
-			}
-		case strings.HasPrefix(arg, "--config="):
-			patterns, err := loadPatternsFromFile(strings.TrimPrefix(arg, "--config="))
-			if err != nil {
-				return dirs, out, help, install, uninstall, unwrapFile, err
-			}
-			typ := TypeSoft
-			if contextSet {
-				typ = currentType
-			}
-			for _, p := range patterns {
-				appendRule(p, typ)
-			}
-		case strings.HasPrefix(arg, "-fc="):
-			patterns, err := loadPatternsFromFile(strings.TrimPrefix(arg, "-fc="))
-			if err != nil {
-				return dirs, out, help, install, uninstall, unwrapFile, err
-			}
-			for _, p := range patterns {
-				appendRule(p, TypeSoft)
-			}
-		case arg == "-Fc":
-			if i+1 >= len(args) {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("-Fc 需要一个文件路径")
-			}
-			i++
-			patterns, err := loadPatternsFromFile(args[i])
-			if err != nil {
-				return dirs, out, help, install, uninstall, unwrapFile, err
-			}
-			for _, p := range patterns {
-				appendRule(p, TypeHard)
-			}
-			currentType = TypeHard
-			contextSet = true
-		case strings.HasPrefix(arg, "-Fc="):
-			patterns, err := loadPatternsFromFile(strings.TrimPrefix(arg, "-Fc="))
-			if err != nil {
-				return dirs, out, help, install, uninstall, unwrapFile, err
-			}
-			for _, p := range patterns {
-				appendRule(p, TypeHard)
-			}
-			currentType = TypeHard
-			contextSet = true
 		case arg == "--dir" || arg == "-d":
 			consumed := 0
 			for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
@@ -380,7 +342,7 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 				consumed++
 			}
 			if consumed == 0 {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--dir 需要一个路径")
+				cliError("--dir 需要指定目录路径")
 			}
 		case strings.HasPrefix(arg, "--dir="):
 			dirs.Set(strings.TrimPrefix(arg, "--dir="))
@@ -421,7 +383,7 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 			appendRule(strings.TrimPrefix(arg, "-Filter="), TypeHard)
 		case arg == "--out" || arg == "-o":
 			if i+1 >= len(args) {
-				return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--out 需要一个路径")
+				cliError(arg + " 需要指定一个输出路径")
 			}
 			i++
 			out = args[i]
@@ -441,6 +403,9 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 			}
 			i = len(args)
 		default:
+			if strings.HasPrefix(arg, "-") && len(arg) > 1 {
+				cliError(fmt.Sprintf("未知选项: %s", arg))
+			}
 			if isPatternArg(arg) {
 				typ := currentType
 				if !contextSet {
@@ -454,7 +419,7 @@ func parseCommandLine() (rawStringList, string, bool, bool, bool, string, error)
 	}
 
 	if install && uninstall {
-		return dirs, out, help, install, uninstall, unwrapFile, fmt.Errorf("--install 与 --uninstall 不能同时使用")
+		cliError("--install 与 --uninstall 不能同时使用")
 	}
 
 	return dirs, out, help, install, uninstall, unwrapFile, nil
@@ -649,33 +614,35 @@ func initRules() {
 
 func main() {
 	flag.Usage = func() {
+		printOption := func(flagText string, desc string) {
+			fmt.Fprintf(flag.CommandLine.Output(), "  %-16s %s\n", flagText, desc)
+		}
+
 		fmt.Fprintf(flag.CommandLine.Output(), "dir2txt %s\n", version)
-		fmt.Fprintf(flag.CommandLine.Output(), "用法: dir2txt [--dir <path> ...] [--filter <pattern> ...] [dir|pattern ...]\n")
+		printUsageSynopsis(flag.CommandLine.Output())
 		fmt.Fprintf(flag.CommandLine.Output(), "示例:\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --dir . ../other --filter '*.png *.jpg' '!keep.png'\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt -F build/ -f --gitignore '!build/app.exe'\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt . -F src/ -f src/ src/main.go\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --unwrap project_context.md  (暂时停用)\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --unwrap project_context.md\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  dir2txt --wrap ./assets --view -o assets_context.md\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "参数:\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --version/-v  查看版本号\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --dir/-d      指定要扫描的目录，可重复；也可用位置参数追加目录\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --wrap/-w     开启打包模式并指定目录 (同 --dir)，二进制转 Base64 嵌入\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --filter/-f   软过滤：跳过内容输出，目录与树仍显示；同时切换后续模式为软\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --Filter/-F   硬过滤：目录树和文件内容都不显示；同时切换后续模式为硬\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --config/-c   指定配置文件路径 (默认按当前上下文，缺省为软)；行首 # 为注释\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  -fc           指定配置文件路径 (始终作为软过滤)；行首 # 为注释\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  -Fc           指定配置文件路径 (始终作为硬过滤)；行首 # 为注释\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --all         清空当前已加载的所有规则 (重置为空)\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --default     在当前规则链位置追加内置默认规则\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --gitignore   将 .gitignore 匹配结果插入规则列表，动作由当前上下文决定 (默认硬)\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --unwrap      暂时停用\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --view        预览模式：为图片/音视频生成可直接预览的嵌入\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --out/-o      指定输出文件路径或输出目录\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --no-fold     在目录树中不折叠长文件列表，始终显示全部文件 (默认超过 %d 个文件折叠)\n", maxDisplayFiles)
-		fmt.Fprintf(flag.CommandLine.Output(), "  --install     安装程序到系统 (Linux: /usr/local/bin; Windows: Program Files 并添加 PATH)\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --uninstall   从系统中卸载程序\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  --help/-h     显示此帮助\n")
+		printOption("--version/-v", "查看版本号")
+		printOption("--dir/-d", "指定要扫描的目录，可重复；也可用位置参数追加目录")
+		printOption("--wrap/-w", "开启打包模式并指定目录 (同 --dir)，二进制转 Base64 嵌入")
+		printOption("--filter/-f", "软过滤：跳过内容输出，目录与树仍显示；同时切换后续模式为软")
+		printOption("--Filter/-F", "硬过滤：目录树和文件内容都不显示；同时切换后续模式为硬")
+		printOption("--all", "清空当前已加载的所有规则 (重置为空)")
+		printOption("--default", "在当前规则链位置追加内置默认规则")
+		printOption("--gitignore", "将 .gitignore 匹配结果插入规则列表，动作由当前上下文决定 (默认硬)")
+		printOption("--unwrap", "读取 _context.md 并还原文件内容到当前目录 (可配合 --out 指定目标)")
+		printOption("--recursive/-R", "配合 --unwrap 使用，解包完毕后自动递归展开其中嵌套的 *_context.md")
+		printOption("--view", "预览模式：为图片/音视频生成可直接预览的嵌入")
+		printOption("--out/-o", "指定输出文件路径或输出目录")
+		fmt.Fprintf(flag.CommandLine.Output(), "  %-16s %s\n", "--no-fold", fmt.Sprintf("在目录树中不折叠长文件列表，始终显示全部文件 (默认超过 %d 个文件折叠)", maxDisplayFiles))
+		printOption("--install", "安装程序到系统 (Linux: /usr/local/bin; Windows: Program Files 并添加 PATH)")
+		printOption("--uninstall", "从系统中卸载程序")
+		printOption("--help/-h", "显示此帮助")
 		// 说明
 		fmt.Fprintf(flag.CommandLine.Output(), "说明：\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  Pattern 语法: ? 单字符 (test?.log); * 任意串 (*.go); [] 字符范围 (file[0-9].txt); 前缀 ! 取反 (!important.txt)\n")
@@ -688,14 +655,15 @@ func main() {
 		return
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
-		flag.Usage()
-		os.Exit(1)
+		cliError(err.Error())
 	}
 
 	if unwrapFile != "" {
-		fmt.Fprintln(os.Stderr, "错误: --unwrap 功能暂时停用")
-		os.Exit(1)
+		if err := unwrapProcess(unwrapFile, outFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "解包失败: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if install {
@@ -911,6 +879,27 @@ func processDirs(dirs []string, writer *bufio.Writer, finalOutPath string) error
 	return firstErr
 }
 
+// readLongLine 按块读取任意长度的单行，突破 Scanner 64KB token 限制
+func readLongLine(r *bufio.Reader) (string, error) {
+	var builder strings.Builder
+	for {
+		lineChunk, isPrefix, err := r.ReadLine()
+		if err != nil {
+			if err == io.EOF && builder.Len() > 0 {
+				return builder.String(), nil
+			}
+			return builder.String(), err
+		}
+
+		builder.Write(lineChunk)
+
+		if !isPrefix {
+			break
+		}
+	}
+	return builder.String(), nil
+}
+
 // unwrapProcess 读取由 dir2txt 生成的 markdown，并按文件块还原内容
 func unwrapProcess(mdFile string, outputDir string) error {
 	// === 第一遍扫描：分析结构与路径 ===
@@ -918,14 +907,23 @@ func unwrapProcess(mdFile string, outputDir string) error {
 	if err != nil {
 		return fmt.Errorf("无法打开文件: %w", err)
 	}
+	defer f.Close()
 
 	var detectedRoot string
 	var allPaths []string
 	var inStructureBlock bool
+	var inScanCodeBlock bool
+	var scanCodeDepth int
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
+	reader1 := bufio.NewReaderSize(f, 64*1024)
+	for {
+		line, err := readLongLine(reader1)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
 
 		if strings.HasPrefix(line, "# Project Structure") {
 			inStructureBlock = true
@@ -942,9 +940,32 @@ func unwrapProcess(mdFile string, outputDir string) error {
 				clean = strings.TrimSuffix(clean, "\\")
 				if clean != "" {
 					detectedRoot = clean
-					inStructureBlock = false
 				}
 			}
+			continue
+		}
+
+		if inScanCodeBlock {
+			trimLine := strings.TrimSpace(line)
+			if strings.HasPrefix(trimLine, "```") && !strings.HasPrefix(trimLine, "````") {
+				if len(trimLine) > 3 {
+					scanCodeDepth++
+				} else {
+					scanCodeDepth--
+					if scanCodeDepth <= 0 {
+						inScanCodeBlock = false
+						scanCodeDepth = 0
+					}
+				}
+			}
+			continue
+		}
+
+		trimLine := strings.TrimSpace(line)
+		if strings.HasPrefix(trimLine, "```") && !strings.HasPrefix(trimLine, "````") {
+			inScanCodeBlock = true
+			scanCodeDepth = 1
+			continue
 		}
 
 		if strings.HasPrefix(line, "## File: ") {
@@ -952,7 +973,6 @@ func unwrapProcess(mdFile string, outputDir string) error {
 			allPaths = append(allPaths, raw)
 		}
 	}
-	f.Close()
 
 	if len(allPaths) == 0 {
 		return fmt.Errorf("未在文件中找到任何 '## File:' 标记")
@@ -980,10 +1000,13 @@ func unwrapProcess(mdFile string, outputDir string) error {
 		return err
 	}
 	defer f.Close()
-	scanner = bufio.NewScanner(f)
+	reader2 := bufio.NewReaderSize(f, 64*1024)
+
+	var nestedContexts []string
 
 	var currentRelPath string
 	var inCodeBlock bool
+	var codeBlockDepth int
 	var fileContent bytes.Buffer
 	fileCount := 0
 
@@ -993,28 +1016,74 @@ func unwrapProcess(mdFile string, outputDir string) error {
 			return
 		}
 		fullDest := filepath.Join(targetDir, currentRelPath)
+		var writeErr error
 		if isData {
 			payload := strings.TrimSpace(fileContent.String())
-			if err := restoreFromDataURI(payload, fullDest); err != nil {
-				fmt.Printf("[ERR] 写入失败 %s: %v\n", currentRelPath, err)
-			} else {
-				fmt.Printf("[RESTORE] %s\n", currentRelPath)
-				fileCount++
-			}
+			writeErr = restoreFromDataURI(payload, fullDest)
 		} else {
-			if err := writeRestoredFileDirect(fullDest, fileContent.Bytes()); err != nil {
-				fmt.Printf("[ERR] 写入失败 %s: %v\n", currentRelPath, err)
-			} else {
-				fmt.Printf("[RESTORE] %s\n", currentRelPath)
-				fileCount++
+			writeErr = writeRestoredFileDirect(fullDest, fileContent.Bytes())
+		}
+
+		if writeErr != nil {
+			fmt.Printf("[ERR] 写入失败 %s: %v\n", currentRelPath, writeErr)
+		} else {
+			fmt.Printf("[RESTORE] %s\n", currentRelPath)
+			fileCount++
+			if config.Recursive && strings.HasSuffix(strings.ToLower(currentRelPath), "_context.md") {
+				nestedContexts = append(nestedContexts, fullDest)
 			}
 		}
 		fileContent.Reset()
 		currentRelPath = ""
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, err := readLongLine(reader2)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+
+		if currentRelPath == "" {
+			if strings.HasPrefix(line, "## File: ") {
+				raw := strings.TrimSpace(strings.TrimPrefix(line, "## File: "))
+				rel := calculateRelPath(raw, detectedRoot, allPaths)
+				rel = sanitizeRelPath(rel)
+				currentRelPath = rel
+				inCodeBlock = false
+				codeBlockDepth = 0
+				fileContent.Reset()
+			}
+			continue
+		}
+
+		if inCodeBlock {
+			trimLine := strings.TrimSpace(line)
+			if strings.HasPrefix(trimLine, "```") && !strings.HasPrefix(trimLine, "````") {
+				if len(trimLine) > 3 {
+					codeBlockDepth++
+					fileContent.WriteString(line)
+					fileContent.WriteByte('\n')
+				} else {
+					codeBlockDepth--
+					if codeBlockDepth <= 0 {
+						payload := strings.TrimSpace(fileContent.String())
+						flushBuffer(isDataURI(payload))
+						inCodeBlock = false
+						codeBlockDepth = 0
+					} else {
+						fileContent.WriteString(line)
+						fileContent.WriteByte('\n')
+					}
+				}
+			} else {
+				fileContent.WriteString(line)
+				fileContent.WriteByte('\n')
+			}
+			continue
+		}
 
 		if strings.HasPrefix(line, "## File: ") {
 			raw := strings.TrimSpace(strings.TrimPrefix(line, "## File: "))
@@ -1022,29 +1091,16 @@ func unwrapProcess(mdFile string, outputDir string) error {
 			rel = sanitizeRelPath(rel)
 			currentRelPath = rel
 			inCodeBlock = false
+			codeBlockDepth = 0
 			fileContent.Reset()
 			continue
 		}
 
-		if currentRelPath == "" {
-			continue
-		}
-
-		if strings.HasPrefix(line, "```") {
-			if inCodeBlock {
-				payload := strings.TrimSpace(fileContent.String())
-				flushBuffer(isDataURI(payload))
-				inCodeBlock = false
-			} else {
-				inCodeBlock = true
-				fileContent.Reset()
-			}
-			continue
-		}
-
-		if inCodeBlock {
-			fileContent.WriteString(line)
-			fileContent.WriteByte('\n')
+		trimLine := strings.TrimSpace(line)
+		if strings.HasPrefix(trimLine, "```") && !strings.HasPrefix(trimLine, "````") {
+			inCodeBlock = true
+			codeBlockDepth = 1
+			fileContent.Reset()
 			continue
 		}
 
@@ -1063,15 +1119,34 @@ func unwrapProcess(mdFile string, outputDir string) error {
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-
 	if inCodeBlock && currentRelPath != "" {
 		fmt.Printf("[WARN] 文件 %s 的代码块未正常闭合，已跳过。\n", currentRelPath)
 	}
 
 	fmt.Printf("解包完成！共还原 %d 个文件。\n", fileCount)
+
+	if len(nestedContexts) > 0 {
+		fmt.Printf("\n--- 启动就地递归展开嵌套上下文 ---\n")
+		currentMdAbs, _ := filepath.Abs(mdFile)
+		for _, nestedMd := range nestedContexts {
+			nestedAbs, _ := filepath.Abs(nestedMd)
+			if nestedAbs == currentMdAbs {
+				continue
+			}
+			fmt.Printf("[RECURSIVE] 正在就地展开: %s\n", nestedMd)
+			nestedOutputDir := filepath.Dir(nestedMd)
+			if err := unwrapProcess(nestedMd, nestedOutputDir); err != nil {
+				fmt.Printf("[ERR] 递归展开 %s 失败: %v\n", nestedMd, err)
+			} else {
+				if rmErr := os.Remove(nestedMd); rmErr != nil {
+					fmt.Printf("[WARN] 无法移除已展开的文件 %s: %v\n", nestedMd, rmErr)
+				} else {
+					fmt.Printf("[DEL] 移除嵌套释放源: %s\n", filepath.Base(nestedMd))
+				}
+			}
+		}
+	}
+
 	return nil
 }
 

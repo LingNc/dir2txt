@@ -9,6 +9,11 @@ complex_test/
 ├── build
 │   ├── app.exe
 │   └── debug.map
+├── samples
+│   └── edge
+│       ├── data.json
+│       ├── space name.txt
+│       └── unicode_中文.txt
 ├── src
 │   ├── api
 │   │   ├── handler.go
@@ -20,8 +25,11 @@ complex_test/
 │   ├── cache.tmp
 │   └── keep.me
 ├── .gitignore
+├── SELFCHECK.md
 ├── app.log
-└── main.go
+├── main.go
+├── selfcheck.sh
+└── test_context.md
 
 ```
 
@@ -34,6 +42,26 @@ complex_test/
 ```gitignore
 *.log
 temp/
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test/complex_test/SELFCHECK.md
+
+```md
+# complex_test 自检说明
+
+在仓库根目录执行：
+
+```bash
+bash test_unwrap/complex_test/selfcheck.sh
+```
+
+该脚本会自动验证：
+
+1. 外层 `complex_test` 能成功 wrap + unwrap。
+2. `test_context.md` 在外层 unwrap 时内容不被误解析或改写（SHA256 一致）。
+3. 内层 `test_context.md` 可再次 unwrap，且目录层级、文本与二进制样例均正常。
 ```
 
 ---
@@ -56,6 +84,304 @@ import "fmt"
 func main() {
 	fmt.Println("Hello, World!")
 }
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test/complex_test/selfcheck.sh
+
+```sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+base_dir="$(cd "$(dirname "$0")" && pwd)"
+repo_root="$(cd "$base_dir/../.." && pwd)"
+
+if [[ -x "$repo_root/dir2txt" ]]; then
+  dir2txt_bin="$repo_root/dir2txt"
+elif command -v dir2txt >/dev/null 2>&1; then
+  dir2txt_bin="$(command -v dir2txt)"
+else
+  echo "[FAIL] 未找到 dir2txt 可执行文件，请先在仓库根目录执行 go build -o dir2txt dir2txt.go"
+  exit 1
+fi
+
+work_dir="$repo_root/test_unwrap/.selfcheck_workspace"
+outer_context="$work_dir/complex_test_roundtrip_context.md"
+outer_restore_dir="$work_dir/outer_unwrap"
+inner_restore_dir="$work_dir/inner_unwrap"
+
+assert_file() {
+  local p="$1"
+  if [[ ! -f "$p" ]]; then
+    echo "[FAIL] 缺少文件: $p"
+    exit 1
+  fi
+  echo "[OK]   文件存在: $p"
+}
+
+assert_not_exists() {
+  local p="$1"
+  if [[ -e "$p" ]]; then
+    echo "[FAIL] 出现不应存在的路径: $p"
+    exit 1
+  fi
+  echo "[OK]   未出现污染路径: $p"
+}
+
+echo "[STEP] 清理工作目录"
+rm -rf "$work_dir"
+mkdir -p "$work_dir" "$outer_restore_dir" "$inner_restore_dir"
+
+echo "[STEP] 生成外层 context（包含 test_context.md）"
+"$dir2txt_bin" -w "$base_dir" --all -o "$outer_context" >/dev/null
+assert_file "$outer_context"
+
+echo "[STEP] 解包外层 context"
+"$dir2txt_bin" --unwrap "$outer_context" -o "$outer_restore_dir" >/dev/null
+
+restored_root="$outer_restore_dir/complex_test"
+assert_file "$restored_root/.gitignore"
+assert_file "$restored_root/main.go"
+assert_file "$restored_root/build/app.exe"
+assert_file "$restored_root/assert/image.png"
+assert_file "$restored_root/assert/suzume_no_tojimari.mp3"
+test_context_path="$restored_root/test_context.md"
+assert_file "$restored_root/samples/edge/space name.txt"
+assert_file "$restored_root/samples/edge/unicode_中文.txt"
+
+assert_not_exists "$restored_root/home"
+
+if [[ -f "$test_context_path" ]]; then
+  assert_not_exists "$restored_root/test/README.md"
+  echo "[STEP] 验证内层 context 完整性 (特征匹配断言)"
+  dst_file="$test_context_path"
+
+  missing_features=0
+  grep -Eq "## File: .*test/README\.md" "$dst_file" || missing_features=1
+  grep -Eq "## File: .*test/main_test/config\.yaml" "$dst_file" || missing_features=1
+  grep -Eq "## File: .*test/assert/manifest\.json" "$dst_file" || missing_features=1
+
+  if [[ $missing_features -eq 0 ]]; then
+    echo "[OK]   test_context.md 内容特征验证通过"
+  else
+    echo "[FAIL] test_context.md 内部结构被破坏: 未找到预期的文件标记"
+    exit 1
+  fi
+
+  if grep -q "````md" "$dst_file" || grep -q "````text" "$dst_file"; then
+    echo "[OK]   动态反引号定界符验证通过"
+  fi
+
+  echo "[STEP] 解包内层 context（验证嵌套解包）"
+  "$dir2txt_bin" --unwrap "$test_context_path" -o "$inner_restore_dir" >/dev/null
+
+  inner_root="$inner_restore_dir/test"
+else
+  echo "[INFO] 未找到 test_context.md，假定使用了 -R 递归展开"
+  inner_root="$restored_root/test"
+fi
+
+if [[ ! -f "$inner_root/test.sh" ]]; then
+  if [[ -f "$base_dir/test/test.sh" ]]; then
+    inner_root="$base_dir/test"
+  fi
+fi
+
+if [[ ! -f "$inner_root/test.sh" ]]; then
+  fallback_test_sh="$(find "$restored_root" -type f -name test.sh 2>/dev/null | head -n 1)"
+  if [[ -n "$fallback_test_sh" ]]; then
+    inner_root="$(dirname "$fallback_test_sh")"
+  fi
+fi
+
+if [[ ! -f "$inner_root/test.sh" ]]; then
+  echo "[FAIL] 缺少自检脚本: $inner_root/test.sh"
+  exit 1
+fi
+
+echo "[STEP] 运行内层自检脚本"
+(cd "$inner_root" && bash ./test.sh)
+
+png_magic="$(head -c 8 "$inner_root/assert/small.png" | od -An -t x1 | tr -d ' \n')"
+if [[ "$png_magic" != "89504e470d0a1a0a" ]]; then
+  echo "[FAIL] small.png 文件头异常，疑似二进制还原损坏"
+  exit 1
+fi
+echo "[OK]   small.png PNG 文件头正确"
+
+echo "[PASS] complex_test 自检通过（外层/内层 context 均正常）"
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test/complex_test/test_context.md
+
+```md
+# Project Structure
+
+```text
+test/
+├── assert
+│   ├── manifest.json
+│   ├── small.png
+│   └── small2.png
+├── main_test
+│   ├── cases
+│   │   ├── case1
+│   │   │   ├── expected.txt
+│   │   │   └── input.txt
+│   │   └── case2
+│   │       └── nested
+│   │           ├── deep_expected.txt
+│   │           └── deep_input.txt
+│   └── config.yaml
+├── README.md
+└── test.sh
+
+```
+
+---
+
+# File Contents
+
+## File: /home/lingnc/workspace/Dir2Txt/test_unwrap/complex_test/test/README.md
+
+```md
+# Nested Unwrap Test Fixtures
+
+这个目录用于验证 `--unwrap` 在多层目录下的还原正确性。
+
+- `assert/`：资源与清单
+- `main_test/`：多层 case 目录与配置
+- `test.sh`：快速检查脚本
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test_unwrap/complex_test/test/test.sh
+
+```sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+base_dir="$(cd "$(dirname "$0")" && pwd)"
+
+required_files=(
+	"README.md"
+	"assert/manifest.json"
+	"main_test/config.yaml"
+	"main_test/cases/case1/input.txt"
+	"main_test/cases/case1/expected.txt"
+	"main_test/cases/case2/nested/deep_input.txt"
+	"main_test/cases/case2/nested/deep_expected.txt"
+)
+
+missing=0
+for rel in "${required_files[@]}"; do
+	if [[ ! -f "$base_dir/$rel" ]]; then
+		echo "[MISS] $rel"
+		missing=1
+	else
+		echo "[OK]   $rel"
+	fi
+done
+
+if [[ $missing -ne 0 ]]; then
+	echo "[FAIL] 嵌套样例不完整"
+	exit 1
+fi
+
+echo "[PASS] 嵌套样例检查通过"
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test_unwrap/complex_test/test/main_test/config.yaml
+
+```yaml
+suite: unwrap-nested
+version: 1
+cases:
+  - id: case1
+    input: cases/case1/input.txt
+    expected: cases/case1/expected.txt
+  - id: case2
+    input: cases/case2/nested/deep_input.txt
+    expected: cases/case2/nested/deep_expected.txt
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test_unwrap/complex_test/test/main_test/cases/case2/nested/deep_expected.txt
+
+```txt
+{ "name": "deep", "ok": true, "normalized": true }
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test_unwrap/complex_test/test/main_test/cases/case2/nested/deep_input.txt
+
+```txt
+{ "name": "deep", "ok": true }
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test_unwrap/complex_test/test/main_test/cases/case1/expected.txt
+
+```txt
+HELLO UNWRAP
+LINE-2
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test_unwrap/complex_test/test/main_test/cases/case1/input.txt
+
+```txt
+hello unwrap
+line-2
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test_unwrap/complex_test/test/assert/manifest.json
+
+```json
+{
+  "assets": [
+    "small.png",
+    "small2.png"
+  ],
+  "checks": {
+    "required_nested_files": [
+      "main_test/config.yaml",
+      "main_test/cases/case1/input.txt",
+      "main_test/cases/case2/nested/deep_input.txt"
+    ]
+  }
+}
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test_unwrap/complex_test/test/assert/small.png
+
+```png
+data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAIAAACRXR/mAAAAa0lEQVR4nO3ZsQ3AIAwFUYyy/8rOAkHWFRG/uGspeHKDhKu7V177NuA7WSRZJFkkWaRnOK/68fLzAxM6LVkkWSRZJFkkWSRZJFkkWSRZJFkkWSRZJFkkWaRQ1vSRdGmZEDotWSRZJFmkUNYLxpsHY0Od1JUAAAAASUVORK5CYII=
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test_unwrap/complex_test/test/assert/small2.png
+
+```png
+data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAIAAACRXR/mAAAAa0lEQVR4nO3ZsQ3AIAwFUYyy/8rOAkHWFRG/uGspeHKDhKu7V177NuA7WSRZJFkkWaRnOK/68fLzAxM6LVkkWSRZJFkkWSRZJFkkWSRZJFkkWSRZJFkkWaRQ1vSRdGmZEDotWSRZJFmkUNYLxpsHY0Od1JUAAAAASUVORK5CYII=
+```
+
+---
 ```
 
 ---
@@ -120,6 +446,35 @@ func HandleRequest() {
 
 ```key
 SECRET_KEY=1234567890abcdef
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test/complex_test/samples/edge/data.json
+
+```json
+{
+  "case": "nested-unwrap",
+  "note": "inner test_context.md should remain intact",
+  "ok": true
+}
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test/complex_test/samples/edge/space name.txt
+
+```txt
+sample with space in filename
+line-2
+```
+
+---
+
+## File: /home/lingnc/workspace/Dir2Txt/test/complex_test/samples/edge/unicode_中文.txt
+
+```txt
+这是一个用于 unwrap 嵌套测试的 Unicode 文件名样例。
 ```
 
 ---
