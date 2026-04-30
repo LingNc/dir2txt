@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version         = "v1.8.2"
+	version         = "v1.8.3"
 	maxDisplayFiles = 24
 	keepHeadFiles   = 8
 	keepTailFiles   = 8
@@ -132,7 +132,7 @@ func walkFollowSymlinks(root string, fn func(logicalRel string, fullPath string,
 	return nil
 }
 
-func applyGitignoreFile(dirPath string, logicalRel string, parentPatterns []gogitignore.Pattern) (gogitignore.Matcher, []gogitignore.Pattern, error) {
+func applyGitignoreFile(dirPath string, domain string, parentPatterns []gogitignore.Pattern) (gogitignore.Matcher, []gogitignore.Pattern, error) {
 	if !config.UseGitignore {
 		return nil, parentPatterns, nil
 	}
@@ -157,8 +157,8 @@ func applyGitignoreFile(dirPath string, logicalRel string, parentPatterns []gogi
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		base := filepath.ToSlash(logicalRel)
-		patterns = append(patterns, gogitignore.ParsePattern(line, splitPath(base)))
+		// domain 是从根目录到当前 .gitignore 所在目录的相对路径
+		patterns = append(patterns, gogitignore.ParsePattern(line, splitPath(domain)))
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, nil, err
@@ -1606,7 +1606,13 @@ func writeTree(rootFS string, rootLogical string, currentFS string, currentLogic
 	var currentPatterns []gogitignore.Pattern
 	if config.UseGitignore {
 		var err error
-		matcher, currentPatterns, err = applyGitignoreFile(currentFS, currentLogical, patterns)
+		// 计算从根目录到当前目录的相对路径作为 domain
+		domainRel, _ := filepath.Rel(rootLogical, currentLogical)
+		domainRel = filepath.ToSlash(domainRel)
+		if domainRel == "." {
+			domainRel = ""
+		}
+		matcher, currentPatterns, err = applyGitignoreFile(currentFS, domainRel, patterns)
 		if err != nil {
 			return err
 		}
